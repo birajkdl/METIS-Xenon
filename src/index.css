@@ -1,0 +1,262 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,400..700;1,400..700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Playfair Display", Georgia, Cambria, "Times New Roman", Times, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: #050505;
+  color: #d4d4d8;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Custom scrollbars to look sleek in dark mode */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #050505;
+}
+::-webkit-scrollbar-thumb {
+  background: #1f1f23;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #333338;
+}
+
+/* ==========================================================================
+   HIGH-CONTRAST LIGHT MODE (Daytime Outdoor Site Inspections)
+   ========================================================================== */
+
+.theme-light,
+.theme-light body {
+  background-color: #f8fafc !important; /* light slate background */
+  color: #0f172a !important; /* high-contrast dark slate text */
+}
+
+/* General Layout overrides */
+.theme-light .bg-\[\#050505\],
+.theme-light .bg-slate-50 {
+  background-color: #f8fafc !important;
+}
+
+.theme-light .bg-\[\#07070a\],
+.theme-light .bg-\[\#070708\],
+.theme-light .bg-\[\#09090b\],
+.theme-light .bg-\[\#0a0a0c\],
+.theme-light .bg-\[\#0c0c0f\],
+.theme-light .bg-[#0a0a0c],
+.theme-light .bg-[#0c0c0f],
+.theme-light .bg-[#09090b],
+.theme-light .bg-[#070708] {
+  background-color: #f1f5f9 !important; /* solid sidebar & header panels */
+}
+
+/* Card & Content Containers */
+.theme-light .bg-\[\#0f0f12\],
+.theme-light .bg-\[\#121215\],
+.theme-light .bg-black,
+.theme-light .bg-zinc-900,
+.theme-light .bg-zinc-950,
+.theme-light .bg-black\/45 {
+  background-color: #ffffff !important; /* pure white cards for extreme daylight contrast */
+}
+
+/* Form Input fields, Textareas and Dropdowns */
+.theme-light input,
+.theme-light select,
+.theme-light textarea {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #94a3b8 !important; /* thicker contrast borders for inputs */
+}
+
+/* Interactive hover/active elements */
+.theme-light .bg-\[\#111113\],
+.theme-light .bg-\[\#131316\],
+.theme-light .bg-white\/5,
+.theme-light .bg-white\/10,
+.theme-light .bg-white\/\[0\.02\],
+.theme-light .bg-white\/\[0\.04\] {
+  background-color: #e2e8f0 !important; /* Slate-200 for hovers/badges */
+}
+
+.theme-light .bg-black\/5,
+.theme-light .bg-black\/10,
+.theme-light .bg-black\/20 {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+}
+
+/* Theme-light button modifications */
+.theme-light .bg-blue-600\/10 {
+  background-color: rgba(37, 99, 235, 0.12) !important;
+}
+
+/* High-Contrast Borders */
+.theme-light .border-\[\#1f1f23\],
+.theme-light .border-\[\#27272a\],
+.theme-light .border-zinc-700,
+.theme-light .border-zinc-800,
+.theme-light .border-zinc-900,
+.theme-light .border-white\/10,
+.theme-light .border-white\/5,
+.theme-light .border-zinc-800\/50,
+.theme-light .border-zinc-800\/60,
+.theme-light .border-dashed {
+  border-color: #cbd5e1 !important; /* slate-300 borders */
+}
+
+/* Typography high-contrast mapping */
+.theme-light .text-white,
+.theme-light .text-zinc-100 {
+  color: #0f172a !important; /* absolute slate-900 text */
+}
+
+.theme-light .text-[#d4d4d8],
+.theme-light .text-zinc-200,
+.theme-light .text-zinc-300 {
+  color: #1e293b !important; /* slate-800 text */
+}
+
+.theme-light .text-zinc-400 {
+  color: #334155 !important; /* slate-700 text */
+}
+
+.theme-light .text-zinc-500,
+.theme-light .text-slate-400 {
+  color: #475569 !important; /* slate-600 text */
+}
+
+/* Boost vibrancy/visibility of semantic elements under daylight glare */
+.theme-light .text-blue-400 {
+  color: #1d4ed8 !important; /* deeper blue-700 */
+}
+.theme-light .text-emerald-400 {
+  color: #15803d !important; /* deeper green-700 */
+}
+.theme-light .text-amber-400 {
+  color: #b45309 !important; /* deeper amber-700 */
+}
+.theme-light .text-red-400 {
+  color: #b91c1c !important; /* deeper red-700 */
+}
+
+/* Recharts & Charts Contrast Adjustments */
+.theme-light .recharts-cartesian-grid-horizontal line,
+.theme-light .recharts-cartesian-grid-vertical line {
+  stroke: #e2e8f0 !important;
+}
+.theme-light .recharts-text {
+  fill: #475569 !important;
+}
+
+/* Leaflet maps popup & control overrides */
+.theme-light .leaflet-popup-content-wrapper,
+.theme-light .leaflet-popup-tip {
+  background: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #94a3b8;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1) !important;
+}
+
+.theme-light .leaflet-control-zoom-in,
+.theme-light .leaflet-control-zoom-out {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+.theme-light .custom-cluster-icon > div {
+  background-color: rgba(37, 99, 235, 0.15) !important;
+  border-color: rgba(37, 99, 235, 0.6) !important;
+  color: #1d4ed8 !important;
+}
+
+/* Light Theme scrollbars */
+.theme-light ::-webkit-scrollbar-track {
+  background: #f8fafc;
+}
+.theme-light ::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+}
+.theme-light ::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Subtle red pulse animation for critical battery level cards */
+@keyframes pulse-red {
+  0%, 100% {
+    box-shadow: 0 0 0 0px rgba(239, 68, 68, 0);
+    border-color: rgba(239, 68, 68, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 8px 2px rgba(239, 68, 68, 0.25);
+    border-color: rgba(239, 68, 68, 0.75);
+    background-color: rgba(239, 68, 68, 0.04);
+  }
+}
+
+.animate-pulse-red {
+  animation: pulse-red 2s cubic-bezier(0.4, 0, 0.6, 1) infinite !important;
+}
+
+@keyframes map-blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.animate-map-blink {
+  animation: map-blink 1.2s ease-in-out infinite !important;
+}
+
+/* Custom station icon transformations and hover effects to improve usability in crowded areas */
+.custom-station-icon {
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: transform;
+}
+
+.custom-station-icon:hover {
+  z-index: 99999 !important;
+}
+
+.custom-station-icon div {
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), filter 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: transform, filter;
+}
+
+.custom-station-icon:hover div {
+  transform: scale(1.3) !important;
+  filter: drop-shadow(0 10px 12px rgba(0, 0, 0, 0.75)) drop-shadow(0 4px 5px rgba(0, 0, 0, 0.65)) !important;
+}
+
+/* Custom cluster icon transformations and hover effects */
+.custom-cluster-icon {
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: transform;
+}
+
+.custom-cluster-icon:hover {
+  z-index: 99999 !important;
+}
+
+.custom-cluster-icon div {
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), filter 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: transform, filter;
+}
+
+.custom-cluster-icon:hover div {
+  transform: scale(1.15) !important;
+  filter: drop-shadow(0 10px 12px rgba(0, 0, 0, 0.75)) drop-shadow(0 4px 5px rgba(0, 0, 0, 0.65)) !important;
+}
+
+
