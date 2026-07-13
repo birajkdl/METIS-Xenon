@@ -11,6 +11,7 @@ export interface AuthRequest extends Request {
     email: string;
     role: string | null;
     assignedStationId: number | null;
+    office: string | null;
     createdAt: Date | null;
   };
 }

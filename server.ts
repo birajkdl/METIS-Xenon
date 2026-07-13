@@ -1,8 +1,9 @@
 import express from "express";
 import path from "path";
+import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
 import { db } from "./src/db/index.ts";
-import { weatherStations, sensorsInventory, calibrations, users, customStatuses, sensorDeployments, sensorReplacements, sensorTransfers, customRoles, smtpConfig, notificationSettings, deliveryLogs, auditLogs, suppliers, supplierAgreements, supplierEvaluations, requisitions, requisitionItems, documents } from "./src/db/schema.ts";
+import { weatherStations, sensorsInventory, calibrations, users, customStatuses, sensorDeployments, sensorReplacements, sensorTransfers, customRoles, smtpConfig, notificationSettings, deliveryLogs, auditLogs, suppliers, supplierAgreements, supplierEvaluations, requisitions, requisitionItems, documents, calibrationDevices, calibrationJobs, installationProjects, regionalOffices } from "./src/db/schema.ts";
 import { eq, desc, and } from "drizzle-orm";
 import { requireAuth, AuthRequest } from "./src/middleware/auth.ts";
 import { sendNotification, checkAndTriggerMonthlyReminders } from "./src/lib/notifications.ts";
@@ -554,11 +555,70 @@ async function startServer() {
     }
   }
 
+  async function seedCalibrationDevices() {
+    try {
+      const existing = await db.select().from(calibrationDevices);
+      if (existing.length > 0) {
+        console.log("Calibration devices already exist. Skipping seeding.");
+        return;
+      }
+      console.log("Initializing calibration devices seed data...");
+      const today = new Date().toISOString().split('T')[0];
+      const devices = [
+        {
+          deviceName: "Fluke 7103 Micro-Bath Reference",
+          deviceType: "Thermometer Calibrator",
+          serialNumber: "CD-FLK-7103-9982",
+          lastCalibrated: today,
+          calibrationDue: "2027-07-09",
+          accuracyClass: "±0.02°C",
+          status: "Active",
+          assignedLab: "Central Meteorological Calibration Lab",
+        },
+        {
+          deviceName: "Druck DPI 611 Pressure Calibrator",
+          deviceType: "Barometer Calibrator",
+          serialNumber: "CD-DRK-611-3321",
+          lastCalibrated: today,
+          calibrationDue: "2027-07-09",
+          accuracyClass: "±0.01% FS",
+          status: "Active",
+          assignedLab: "Central Meteorological Calibration Lab",
+        },
+        {
+          deviceName: "Reference Wind Tunnel (MET-WT-01)",
+          deviceType: "Anemometer Calibrator",
+          serialNumber: "CD-REF-WT01-8848",
+          lastCalibrated: today,
+          calibrationDue: "2028-07-09",
+          accuracyClass: "±0.1 m/s",
+          status: "Active",
+          assignedLab: "Central Meteorological Calibration Lab",
+        },
+        {
+          deviceName: "Vaisala HM70 Reference Humidity Probe",
+          deviceType: "Hygrometer Calibrator",
+          serialNumber: "CD-VAI-HM70-1122",
+          lastCalibrated: today,
+          calibrationDue: "2027-01-09",
+          accuracyClass: "±1.0% RH",
+          status: "Active",
+          assignedLab: "Central Meteorological Calibration Lab",
+        }
+      ];
+      await db.insert(calibrationDevices).values(devices);
+      console.log("Calibration devices seeded successfully.");
+    } catch (err) {
+      console.error("Failed to seed calibration devices:", err);
+    }
+  }
+
   // Run seeding on startup
   await seedDatabase();
   await seedStatuses();
   await seedRoles();
   await seedSuppliers();
+  await seedCalibrationDevices();
 
   // Ensure 'birajkdl@gmail.com' has the Super Administrator role if they exist
   try {
@@ -662,13 +722,14 @@ async function startServer() {
     }
 
     const { uid } = req.params;
-    const { role, assignedStationId } = req.body;
+    const { role, assignedStationId, office } = req.body;
 
     try {
       const updated = await db.update(users)
         .set({
           role,
-          assignedStationId: assignedStationId ? parseInt(assignedStationId) : null
+          assignedStationId: assignedStationId ? parseInt(assignedStationId) : null,
+          office: office !== undefined ? office : null
         })
         .where(eq(users.uid, uid))
         .returning();
@@ -680,6 +741,82 @@ async function startServer() {
     } catch (error: any) {
       console.error("Failed to update user role:", error);
       res.status(500).json({ error: "Failed to update user role", details: error.message });
+    }
+  });
+
+  app.post("/api/users", requireAuth, async (req: AuthRequest, res) => {
+    const callerRole = req.dbUser?.role;
+    if (!callerRole) {
+      return res.status(403).json({ error: "Forbidden: No registered role found." });
+    }
+
+    // Determine if caller has all 3 permissions (read, write, edit)
+    let hasAllPerms = false;
+    const standardAll = ['Super Administrator', 'Head Office Admin/User', 'Regional Office Admin/User', 'Technician'];
+    if (standardAll.includes(callerRole)) {
+      hasAllPerms = true;
+    } else {
+      try {
+        const customRoleEntry = await db.select().from(customRoles).where(eq(customRoles.roleName, callerRole));
+        if (customRoleEntry.length > 0) {
+          const r = customRoleEntry[0];
+          if (r.readPermission && r.writePermission && r.editPermission) {
+            hasAllPerms = true;
+          }
+        }
+      } catch (err) {
+        console.error("Failed to query custom role for check:", err);
+      }
+    }
+
+    if (!hasAllPerms) {
+      return res.status(403).json({ error: "Forbidden: You must have read, write, and edit privileges to create users." });
+    }
+
+    const { email, password, username, phoneNumber, designation, office, role, assignedStationId } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: "Missing required fields: email and password are required." });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: "Password must be at least 6 characters long." });
+    }
+
+    try {
+      // 1. Create in Firebase Auth
+      const firebaseUser = await adminAuth.createUser({
+        email,
+        password,
+        displayName: username || null,
+        phoneNumber: phoneNumber || undefined,
+      });
+
+      // 2. Insert into local users table
+      const newUser = await db.insert(users)
+        .values({
+          uid: firebaseUser.uid,
+          email: email.toLowerCase(),
+          phoneNumber: phoneNumber || null,
+          role: role || 'Read-only/Audit User',
+          username: username || null,
+          designation: designation || null,
+          office: office || null,
+          assignedStationId: assignedStationId ? parseInt(assignedStationId) : null,
+        })
+        .returning();
+
+      await createAuditLog(
+        "Create User Account",
+        req.dbUser?.email || "Unknown",
+        callerRole,
+        `Created new operator login ${email} with role '${role || 'Read-only/Audit User'}'`
+      );
+
+      res.status(201).json(newUser[0]);
+    } catch (error: any) {
+      console.error("Programmatic user creation error:", error);
+      res.status(500).json({ error: error.message || "Failed to create user." });
     }
   });
 
@@ -699,7 +836,7 @@ async function startServer() {
       return res.status(403).json({ error: "Forbidden: Only Super Administrators can add custom roles." });
     }
 
-    const { roleName, description } = req.body;
+    const { roleName, description, readPermission, writePermission, editPermission } = req.body;
     if (!roleName) {
       return res.status(400).json({ error: "Missing required field: roleName" });
     }
@@ -708,7 +845,10 @@ async function startServer() {
       const result = await db.insert(customRoles)
         .values({
           roleName,
-          description: description || null
+          description: description || null,
+          readPermission: readPermission !== undefined ? Boolean(readPermission) : true,
+          writePermission: writePermission !== undefined ? Boolean(writePermission) : false,
+          editPermission: editPermission !== undefined ? Boolean(editPermission) : false,
         })
         .returning();
 
@@ -716,6 +856,59 @@ async function startServer() {
     } catch (error: any) {
       console.error("Failed to create custom role:", error);
       res.status(500).json({ error: "Failed to create custom role", details: error.message });
+    }
+  });
+
+  app.put("/api/roles/:id", requireAuth, async (req: AuthRequest, res) => {
+    const callerRole = req.dbUser?.role;
+    if (callerRole !== "Super Administrator") {
+      return res.status(403).json({ error: "Forbidden: Only Super Administrators can edit custom roles." });
+    }
+
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "Invalid role ID" });
+    }
+
+    const { roleName, description, readPermission, writePermission, editPermission } = req.body;
+
+    try {
+      const roleToUpdate = await db.select().from(customRoles).where(eq(customRoles.id, id));
+      if (roleToUpdate.length === 0) {
+        return res.status(404).json({ error: "Role not found" });
+      }
+
+      const standardRoles = [
+        'Super Administrator',
+        'Head Office Admin/User',
+        'Regional Office Admin/User',
+        'Synoptic/Aero-synoptic office User',
+        'Station User (optional)',
+        'Technician',
+        'Authorized Signatory',
+        'Read-only/Audit User',
+        'Supplier account'
+      ];
+
+      if (standardRoles.includes(roleToUpdate[0].roleName) && roleName && roleName !== roleToUpdate[0].roleName) {
+        return res.status(400).json({ error: "Cannot rename pre-seeded standard roles." });
+      }
+
+      const updated = await db.update(customRoles)
+        .set({
+          roleName: roleName || roleToUpdate[0].roleName,
+          description: description !== undefined ? description : roleToUpdate[0].description,
+          readPermission: readPermission !== undefined ? Boolean(readPermission) : roleToUpdate[0].readPermission,
+          writePermission: writePermission !== undefined ? Boolean(writePermission) : roleToUpdate[0].writePermission,
+          editPermission: editPermission !== undefined ? Boolean(editPermission) : roleToUpdate[0].editPermission,
+        })
+        .where(eq(customRoles.id, id))
+        .returning();
+
+      res.json(updated[0]);
+    } catch (error: any) {
+      console.error("Failed to update custom role:", error);
+      res.status(500).json({ error: "Failed to update custom role", details: error.message });
     }
   });
 
@@ -950,6 +1143,53 @@ async function startServer() {
     }
   });
 
+  // Regional Offices Endpoints
+  app.get("/api/regional-offices", async (req, res) => {
+    try {
+      const offices = await db.select().from(regionalOffices).orderBy(desc(regionalOffices.createdAt));
+      res.json(offices);
+    } catch (error: any) {
+      console.error("Failed to fetch regional offices:", error);
+      res.status(500).json({ error: "Failed to fetch regional offices", details: error.message });
+    }
+  });
+
+  app.post("/api/regional-offices", requireAuth, async (req: AuthRequest, res) => {
+    const role = req.dbUser?.role;
+    if (role !== 'Super Administrator' && role !== 'Head Office Admin/User' && role !== 'Regional Office Admin/User') {
+      return res.status(403).json({ error: "Forbidden: You do not have permission to manage regional offices." });
+    }
+
+    const { officeName, address, phoneNumber, emailId, website } = req.body;
+    if (!officeName) {
+      return res.status(400).json({ error: "Missing required field: officeName" });
+    }
+
+    try {
+      const result = await db.insert(regionalOffices)
+        .values({
+          officeName,
+          address,
+          phoneNumber,
+          emailId,
+          website,
+        })
+        .returning();
+
+      await createAuditLog(
+        "Create Regional Office",
+        req.dbUser?.email || "Unknown",
+        role,
+        `Created regional office '${officeName}'`
+      );
+
+      res.status(201).json(result[0]);
+    } catch (error: any) {
+      console.error("Failed to create regional office:", error);
+      res.status(500).json({ error: "Failed to create regional office", details: error.message });
+    }
+  });
+
   // 2. Weather Stations Endpoints
   app.get("/api/stations", async (req, res) => {
     try {
@@ -979,7 +1219,7 @@ async function startServer() {
       return res.status(403).json({ error: "Forbidden: You do not have permission to manage weather stations." });
     }
 
-    const { stationName, region, latitude, longitude, batteryVoltageType, batteryCurrentVoltage, stationType } = req.body;
+    const { stationName, region, latitude, longitude, batteryVoltageType, batteryCurrentVoltage, stationType, regionalOfficeId } = req.body;
     if (!stationName || !region || latitude === undefined || longitude === undefined) {
       return res.status(400).json({ error: "Missing required fields: stationName, region, latitude, longitude" });
     }
@@ -997,6 +1237,7 @@ async function startServer() {
           batteryVoltageType: batteryVoltageType || "12V",
           batteryCurrentVoltage: batteryCurrentVoltage !== undefined && batteryCurrentVoltage !== null ? parseFloat(batteryCurrentVoltage) : 12.0,
           stationType: stationType || "Climate",
+          regionalOfficeId: regionalOfficeId ? parseInt(regionalOfficeId) : null,
         })
         .returning();
 
@@ -1018,7 +1259,7 @@ async function startServer() {
       return res.status(400).json({ error: "Invalid station ID" });
     }
 
-    const { stationName, region, latitude, longitude, batteryVoltageType, batteryCurrentVoltage, stationType } = req.body;
+    const { stationName, region, latitude, longitude, batteryVoltageType, batteryCurrentVoltage, stationType, regionalOfficeId } = req.body;
     if (!stationName || !region || latitude === undefined || longitude === undefined) {
       return res.status(400).json({ error: "Missing required fields: stationName, region, latitude, longitude" });
     }
@@ -1036,6 +1277,7 @@ async function startServer() {
           batteryVoltageType: batteryVoltageType || null,
           batteryCurrentVoltage: batteryCurrentVoltage !== undefined && batteryCurrentVoltage !== null ? parseFloat(batteryCurrentVoltage) : null,
           stationType: stationType || null,
+          regionalOfficeId: regionalOfficeId ? parseInt(regionalOfficeId) : null,
         })
         .where(eq(weatherStations.stationId, stationId))
         .returning();
@@ -1240,12 +1482,27 @@ async function startServer() {
       const statusLabel = isSupplier ? `${status} (Pending Admin Approval)` : status;
       const initialLog = `[${timestamp}] Sensor registered with status: ${statusLabel}`;
 
+      let finalRegionalOfficeId = req.body.regionalOfficeId ? parseInt(req.body.regionalOfficeId) : null;
+      let finalAssignedOffice = assignedOffice || null;
+
+      if (req.dbUser?.office) {
+        const matchedOffices = await db.select().from(regionalOffices);
+        const matchedOffice = matchedOffices.find(
+          o => o.officeName.trim().toLowerCase() === req.dbUser.office.trim().toLowerCase()
+        );
+        if (matchedOffice) {
+          finalRegionalOfficeId = matchedOffice.id;
+          finalAssignedOffice = matchedOffice.officeName;
+        }
+      }
+
       const result = await db.insert(sensorsInventory)
         .values({
           sensorType,
           manufacturer,
           status,
           stationId: stationId ? parseInt(stationId) : null,
+          regionalOfficeId: finalRegionalOfficeId,
           statusLog: initialLog,
           dismissedAlert: 'false',
           approvalStatus: isSupplier ? 'Pending Approval' : 'Approved',
@@ -1261,7 +1518,7 @@ async function startServer() {
           calibrationInterval: calibrationInterval || null,
           calibrationDetails: calibrationDetails || null,
           deploymentInfo: deploymentInfo || null,
-          assignedOffice: assignedOffice || null,
+          assignedOffice: finalAssignedOffice,
           responsiblePersonnel: responsiblePersonnel || null,
           conditionStatus: conditionStatus || null,
           remarks: remarks || null,
@@ -1327,7 +1584,10 @@ async function startServer() {
         conditionStatus,
         remarks,
         photos,
-        documents
+        documents,
+        assignedCalibrator,
+        calibrationDeviceUsed,
+        regionalOfficeId
       } = req.body;
       let currentLog = "";
       let oldStatus = "";
@@ -1341,6 +1601,7 @@ async function startServer() {
         manufacturer,
         status,
         stationId: stationId ? parseInt(stationId) : null,
+        regionalOfficeId: regionalOfficeId ? parseInt(regionalOfficeId) : null,
         sensorName: sensorName || null,
         barcode: barcode || null,
         modelNumber: modelNumber || null,
@@ -1359,6 +1620,8 @@ async function startServer() {
         remarks: remarks || null,
         photos: photos || null,
         documents: documents || null,
+        assignedCalibrator: assignedCalibrator || null,
+        calibrationDeviceUsed: calibrationDeviceUsed || null,
       };
 
       if (status && status !== oldStatus) {
@@ -1457,6 +1720,38 @@ async function startServer() {
     } catch (error: any) {
       console.error("Failed to dismiss alert:", error);
       res.status(500).json({ error: "Failed to dismiss alert", details: error.message });
+    }
+  });
+
+  app.put("/api/sensors/:id/quick-note", requireAuth, async (req: AuthRequest, res) => {
+    const role = req.dbUser?.role;
+    if (role === 'Read-only/Audit User') {
+      return res.status(403).json({ error: "Forbidden: Read-only accounts cannot modify sensors." });
+    }
+
+    const sensorId = parseInt(req.params.id);
+    if (isNaN(sensorId)) {
+      return res.status(400).json({ error: "Invalid sensor ID" });
+    }
+
+    try {
+      const { quickNote } = req.body;
+      const existing = await db.select().from(sensorsInventory).where(eq(sensorsInventory.sensorId, sensorId));
+      if (existing.length === 0) {
+        return res.status(404).json({ error: "Sensor not found" });
+      }
+
+      const result = await db.update(sensorsInventory)
+        .set({
+          quickNote: quickNote || null,
+        })
+        .where(eq(sensorsInventory.sensorId, sensorId))
+        .returning();
+
+      res.json(result[0]);
+    } catch (error: any) {
+      console.error("Failed to update quick note:", error);
+      res.status(500).json({ error: "Failed to update quick note", details: error.message });
     }
   });
 
@@ -1591,6 +1886,599 @@ async function startServer() {
     } catch (error: any) {
       console.error("Failed to log calibration:", error);
       res.status(500).json({ error: "Failed to log calibration", details: error.message });
+    }
+  });
+
+  // --- Calibration Lab: Calibration Devices Endpoints ---
+  app.get("/api/calibration-devices", async (req, res) => {
+    try {
+      const list = await db.select().from(calibrationDevices).orderBy(desc(calibrationDevices.deviceId));
+      res.json(list);
+    } catch (error: any) {
+      console.error("Failed to fetch calibration devices:", error);
+      res.status(500).json({ error: "Failed to fetch calibration devices", details: error.message });
+    }
+  });
+
+  app.post("/api/calibration-devices", requireAuth, async (req: AuthRequest, res) => {
+    const role = req.dbUser?.role;
+    if (role === 'Read-only/Audit User' || role === 'Supplier account') {
+      return res.status(403).json({ error: "Forbidden: You do not have permission to manage calibration devices." });
+    }
+
+    const { deviceName, deviceType, serialNumber, lastCalibrated, calibrationDue, accuracyClass, status, assignedLab } = req.body;
+    if (!deviceName || !deviceType || !serialNumber) {
+      return res.status(400).json({ error: "Missing required fields for calibration device" });
+    }
+
+    try {
+      const device = await db.insert(calibrationDevices)
+        .values({
+          deviceName,
+          deviceType,
+          serialNumber,
+          lastCalibrated: lastCalibrated || null,
+          calibrationDue: calibrationDue || null,
+          accuracyClass: accuracyClass || null,
+          status: status || "Active",
+          assignedLab: assignedLab || "Central Meteorological Calibration Lab",
+        })
+        .returning();
+
+      await createAuditLog(
+        'INVENTORY_CREATE',
+        req.dbUser?.email || 'Unknown',
+        req.dbUser?.role || 'Unknown',
+        `Calibration device '${deviceName}' (S/N: ${serialNumber}) added to calibration lab.`,
+        (req.headers['x-forwarded-for'] as string) || req.ip || null,
+        'Success'
+      );
+
+      res.status(201).json(device[0]);
+    } catch (error: any) {
+      console.error("Failed to add calibration device:", error);
+      res.status(500).json({ error: "Failed to add calibration device", details: error.message });
+    }
+  });
+
+  app.put("/api/calibration-devices/:id", requireAuth, async (req: AuthRequest, res) => {
+    const role = req.dbUser?.role;
+    if (role === 'Read-only/Audit User' || role === 'Supplier account') {
+      return res.status(403).json({ error: "Forbidden: You do not have permission to manage calibration devices." });
+    }
+
+    const deviceId = parseInt(req.params.id);
+    if (isNaN(deviceId)) {
+      return res.status(400).json({ error: "Invalid device ID" });
+    }
+
+    const { deviceName, deviceType, serialNumber, lastCalibrated, calibrationDue, accuracyClass, status, assignedLab } = req.body;
+
+    try {
+      const device = await db.update(calibrationDevices)
+        .set({
+          deviceName,
+          deviceType,
+          serialNumber,
+          lastCalibrated: lastCalibrated || null,
+          calibrationDue: calibrationDue || null,
+          accuracyClass: accuracyClass || null,
+          status: status || "Active",
+          assignedLab: assignedLab || "Central Meteorological Calibration Lab",
+        })
+        .where(eq(calibrationDevices.deviceId, deviceId))
+        .returning();
+
+      if (device.length === 0) {
+        return res.status(404).json({ error: "Calibration device not found" });
+      }
+
+      await createAuditLog(
+        'INVENTORY_UPDATE',
+        req.dbUser?.email || 'Unknown',
+        req.dbUser?.role || 'Unknown',
+        `Calibration device ID ${deviceId} ('${deviceName}') updated.`,
+        (req.headers['x-forwarded-for'] as string) || req.ip || null,
+        'Success'
+      );
+
+      res.json(device[0]);
+    } catch (error: any) {
+      console.error("Failed to update calibration device:", error);
+      res.status(500).json({ error: "Failed to update calibration device", details: error.message });
+    }
+  });
+
+  app.delete("/api/calibration-devices/:id", requireAuth, async (req: AuthRequest, res) => {
+    const role = req.dbUser?.role;
+    if (role !== "Super Administrator" && role !== "Head Office Admin/User") {
+      return res.status(403).json({ error: "Forbidden: Only Administrators can delete calibration devices." });
+    }
+
+    const deviceId = parseInt(req.params.id);
+    if (isNaN(deviceId)) {
+      return res.status(400).json({ error: "Invalid device ID" });
+    }
+
+    try {
+      const deleted = await db.delete(calibrationDevices).where(eq(calibrationDevices.deviceId, deviceId)).returning();
+      if (deleted.length === 0) {
+        return res.status(404).json({ error: "Calibration device not found" });
+      }
+
+      await createAuditLog(
+        'ARCHIVE_DELETE_RECORD',
+        req.dbUser?.email || 'Unknown',
+        req.dbUser?.role || 'Unknown',
+        `Deleted calibration device ID ${deviceId} ('${deleted[0].deviceName}').`,
+        (req.headers['x-forwarded-for'] as string) || req.ip || null,
+        'Success'
+      );
+
+      res.json({ message: "Calibration device deleted successfully" });
+    } catch (error: any) {
+      console.error("Failed to delete calibration device:", error);
+      res.status(500).json({ error: "Failed to delete calibration device", details: error.message });
+    }
+  });
+
+  // --- Calibration Lab: Assign Sensor to Calibrator ---
+  app.post("/api/calibrations/assign", requireAuth, async (req: AuthRequest, res) => {
+    const role = req.dbUser?.role;
+    if (role === 'Read-only/Audit User' || role === 'Supplier account') {
+      return res.status(403).json({ error: "Forbidden: You do not have permission to assign sensors for calibration." });
+    }
+
+    const { sensorId, assignedCalibrator, calibrationDeviceUsed, deviceId } = req.body;
+    if (!sensorId || !assignedCalibrator) {
+      return res.status(400).json({ error: "Missing required fields: sensorId and assignedCalibrator" });
+    }
+
+    try {
+      const existing = await db.select().from(sensorsInventory).where(eq(sensorsInventory.sensorId, parseInt(sensorId)));
+      if (existing.length === 0) {
+        return res.status(404).json({ error: "Sensor not found" });
+      }
+
+      const oldStatus = existing[0].status;
+      const currentLog = existing[0].statusLog || "";
+      const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+      const logLine = `[${timestamp}] Assigned for Calibration. Calibrator: ${assignedCalibrator}, Device: ${calibrationDeviceUsed || 'Standard Reference'}. Status changed from '${oldStatus}' to 'In Calibration'.`;
+      const updatedLog = currentLog ? `${currentLog}\n${logLine}` : logLine;
+
+      await db.update(sensorsInventory)
+        .set({
+          status: "In Calibration",
+          assignedCalibrator,
+          calibrationDeviceUsed: calibrationDeviceUsed || null,
+          statusLog: updatedLog,
+          dismissedAlert: 'false'
+        })
+        .where(eq(sensorsInventory.sensorId, parseInt(sensorId)));
+
+      // Provision automatic ISO/IEC 17025 compliant Calibration Job
+      const initialAudit = [{
+        timestamp: new Date().toISOString(),
+        user: req.dbUser?.email || 'Unknown',
+        action: 'INITIATED',
+        stage: 'Plan',
+        details: `Assigned for calibration to ${assignedCalibrator}. ISO/IEC 17025 sequence started.`
+      }];
+
+      const createdJob = await db.insert(calibrationJobs)
+        .values({
+          sensorId: parseInt(sensorId),
+          status: 'In Progress',
+          currentStage: 'Plan',
+          plannedDate: new Date().toISOString().substring(0, 10),
+          plannedCalibrator: assignedCalibrator,
+          calibrationProcedure: 'SOP-CAL-01: Standard Meteorological Instrument Calibration Procedure',
+          deviceId: deviceId ? parseInt(deviceId) : null,
+          fullAuditTrail: JSON.stringify(initialAudit),
+        })
+        .returning();
+
+      await createAuditLog(
+        'CALIBRATION_UPDATE',
+        req.dbUser?.email || 'Unknown',
+        req.dbUser?.role || 'Unknown',
+        `Sensor ID ${sensorId} assigned for calibration to ${assignedCalibrator} (Device: ${calibrationDeviceUsed || 'None'}). ISO/IEC 17025 Job #${createdJob[0].jobId} initialized in 'Plan' stage.`,
+        (req.headers['x-forwarded-for'] as string) || req.ip || null,
+        'Success'
+      );
+
+      res.json({ message: "Sensor successfully assigned and calibration job initialized", jobId: createdJob[0].jobId });
+    } catch (error: any) {
+      console.error("Failed to assign sensor for calibration:", error);
+      res.status(500).json({ error: "Failed to assign sensor for calibration", details: error.message });
+    }
+  });
+
+  // --- ISO/IEC 17025 Controlled Calibration Jobs Endpoints ---
+
+  app.get("/api/calibration-jobs", async (req, res) => {
+    try {
+      const list = await db.select().from(calibrationJobs).orderBy(desc(calibrationJobs.jobId));
+      const sensors = await db.select().from(sensorsInventory);
+      const devices = await db.select().from(calibrationDevices);
+      
+      const detailed = list.map(job => {
+        const sensor = sensors.find(s => s.sensorId === job.sensorId);
+        const device = job.deviceId ? devices.find(d => d.deviceId === job.deviceId) : null;
+        return {
+          ...job,
+          sensorName: sensor ? (sensor.sensorName || `${sensor.manufacturer} ${sensor.sensorType}`) : "Unknown Sensor",
+          sensorType: sensor?.sensorType || "N/A",
+          serialNumber: sensor?.serialNumber || "N/A",
+          manufacturer: sensor?.manufacturer || "N/A",
+          deviceName: device?.deviceName || "N/A",
+          deviceSerialNumber: device?.serialNumber || "N/A",
+        };
+      });
+      
+      res.json(detailed);
+    } catch (error: any) {
+      console.error("Failed to fetch calibration jobs:", error);
+      res.status(500).json({ error: "Failed to fetch calibration jobs", details: error.message });
+    }
+  });
+
+  app.get("/api/calibration-jobs/:id", async (req, res) => {
+    try {
+      const jobId = parseInt(req.params.id);
+      const jobList = await db.select().from(calibrationJobs).where(eq(calibrationJobs.jobId, jobId));
+      if (jobList.length === 0) {
+        return res.status(404).json({ error: "Calibration job not found" });
+      }
+      const job = jobList[0];
+      const sensors = await db.select().from(sensorsInventory).where(eq(sensorsInventory.sensorId, job.sensorId));
+      const devices = job.deviceId ? await db.select().from(calibrationDevices).where(eq(calibrationDevices.deviceId, job.deviceId)) : [];
+      
+      const sensor = sensors[0];
+      const device = devices[0];
+      
+      res.json({
+        ...job,
+        sensorName: sensor ? (sensor.sensorName || `${sensor.manufacturer} ${sensor.sensorType}`) : "Unknown Sensor",
+        sensorType: sensor?.sensorType || "N/A",
+        serialNumber: sensor?.serialNumber || "N/A",
+        manufacturer: sensor?.manufacturer || "N/A",
+        deviceName: device?.deviceName || "N/A",
+        deviceSerialNumber: device?.serialNumber || "N/A",
+      });
+    } catch (error: any) {
+      console.error("Failed to fetch calibration job:", error);
+      res.status(500).json({ error: "Failed to fetch calibration job", details: error.message });
+    }
+  });
+
+  app.post("/api/calibration-jobs", requireAuth, async (req: AuthRequest, res) => {
+    const role = req.dbUser?.role;
+    if (role === 'Read-only/Audit User' || role === 'Supplier account') {
+      return res.status(403).json({ error: "Forbidden: You do not have permission to plan calibrations." });
+    }
+    
+    const { sensorId, plannedDate, plannedCalibrator, calibrationProcedure } = req.body;
+    if (!sensorId || !plannedDate || !plannedCalibrator) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+    
+    try {
+      const sensor = await db.select().from(sensorsInventory).where(eq(sensorsInventory.sensorId, parseInt(sensorId)));
+      if (sensor.length === 0) {
+        return res.status(404).json({ error: "Sensor not found" });
+      }
+      
+      const initialAudit = [{
+        timestamp: new Date().toISOString(),
+        user: req.dbUser?.email || 'Unknown',
+        action: 'INITIATED',
+        stage: 'Plan',
+        details: `Calibration Job planned for sensor ${sensor[0].serialNumber} by ${req.dbUser?.email}. Procedure: ${calibrationProcedure || 'SOP-CAL-01'}`
+      }];
+      
+      const newJob = await db.insert(calibrationJobs)
+        .values({
+          sensorId: parseInt(sensorId),
+          status: 'In Progress',
+          currentStage: 'Plan',
+          plannedDate,
+          plannedCalibrator,
+          calibrationProcedure: calibrationProcedure || 'SOP-CAL-01: Standard Meteorological Instrument Calibration Procedure',
+          fullAuditTrail: JSON.stringify(initialAudit),
+        })
+        .returning();
+        
+      // Update sensor status
+      const oldStatus = sensor[0].status;
+      const currentLog = sensor[0].statusLog || "";
+      const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+      const logLine = `[${timestamp}] ISO/IEC 17025 Calibration Job #${newJob[0].jobId} planned. Status changed from '${oldStatus}' to 'In Calibration'.`;
+      const updatedLog = currentLog ? `${currentLog}\n${logLine}` : logLine;
+      
+      await db.update(sensorsInventory)
+        .set({
+          status: "In Calibration",
+          assignedCalibrator: plannedCalibrator,
+          statusLog: updatedLog,
+          dismissedAlert: 'false'
+        })
+        .where(eq(sensorsInventory.sensorId, parseInt(sensorId)));
+        
+      res.status(201).json(newJob[0]);
+    } catch (error: any) {
+      console.error("Failed to create calibration job:", error);
+      res.status(500).json({ error: "Failed to create calibration job", details: error.message });
+    }
+  });
+
+  app.put("/api/calibration-jobs/:id/stage", requireAuth, async (req: AuthRequest, res) => {
+    const role = req.dbUser?.role;
+    if (role === 'Read-only/Audit User' || role === 'Supplier account') {
+      return res.status(403).json({ error: "Forbidden: You do not have permission to modify calibration stages." });
+    }
+    
+    const jobId = parseInt(req.params.id);
+    const { currentStage, nextStage, payload } = req.body;
+    
+    if (!currentStage || !nextStage) {
+      return res.status(400).json({ error: "Missing currentStage or nextStage fields" });
+    }
+
+    // Role-based access control: Only 'Authorized Signatory' roles can finalize 'Review' and 'Conformity' stages
+    if (currentStage === 'Conformity' || currentStage === 'Review') {
+      if (role !== 'Authorized Signatory' && role !== 'Super Administrator') {
+        return res.status(403).json({ 
+          error: "Forbidden: Only 'Authorized Signatory' roles are authorized to finalize the 'Review' and 'Conformity' stages under ISO/IEC 17025 rules." 
+        });
+      }
+    }
+    
+    try {
+      const jobList = await db.select().from(calibrationJobs).where(eq(calibrationJobs.jobId, jobId));
+      if (jobList.length === 0) {
+        return res.status(404).json({ error: "Calibration job not found" });
+      }
+      
+      const job = jobList[0];
+      const auditTrail = JSON.parse(job.fullAuditTrail || '[]');
+      
+      const updateData: any = {
+        currentStage: nextStage,
+      };
+      
+      let auditDetail = "";
+      
+      if (currentStage === 'Plan') {
+        updateData.plannedDate = payload.plannedDate;
+        updateData.plannedCalibrator = payload.plannedCalibrator;
+        updateData.calibrationProcedure = payload.calibrationProcedure;
+        auditDetail = `Plan defined. Calibrator: ${payload.plannedCalibrator}, Procedure: ${payload.calibrationProcedure}`;
+      } else if (currentStage === 'ReferenceSelection') {
+        updateData.deviceId = parseInt(payload.deviceId);
+        const device = await db.select().from(calibrationDevices).where(eq(calibrationDevices.deviceId, parseInt(payload.deviceId)));
+        const deviceName = device[0] ? device[0].deviceName : `ID ${payload.deviceId}`;
+        auditDetail = `Reference standard selected: ${deviceName}`;
+      } else if (currentStage === 'EnvironmentCheck') {
+        updateData.ambientTemperature = parseFloat(payload.ambientTemperature);
+        updateData.ambientHumidity = parseFloat(payload.ambientHumidity);
+        updateData.ambientPressure = parseFloat(payload.ambientPressure);
+        updateData.environmentStatus = payload.environmentStatus;
+        updateData.environmentCheckedBy = req.dbUser?.email || 'Unknown';
+        updateData.environmentCheckedAt = new Date().toISOString();
+        auditDetail = `Environment check completed: ${payload.environmentStatus}. Temp: ${payload.ambientTemperature}°C, Humidity: ${payload.ambientHumidity}%, Pressure: ${payload.ambientPressure}hPa`;
+      } else if (currentStage === 'Measurements') {
+        updateData.measurements = JSON.stringify(payload.measurements);
+        updateData.measuredBy = req.dbUser?.email || 'Unknown';
+        updateData.measuredAt = new Date().toISOString();
+        auditDetail = `Recorded ${payload.measurements.length} calibration data measurement points.`;
+      } else if (currentStage === 'Uncertainty') {
+        updateData.uncertaintyBudget = JSON.stringify(payload.uncertaintyBudget);
+        updateData.uncertaintyCalculatedBy = req.dbUser?.email || 'Unknown';
+        updateData.uncertaintyCalculatedAt = new Date().toISOString();
+        auditDetail = `Uncertainty calculated. Expanded Uncertainty: ±${payload.uncertaintyBudget.expandedUncertainty} (k=${payload.uncertaintyBudget.coverageFactor})`;
+      } else if (currentStage === 'Conformity') {
+        updateData.conformityResult = payload.conformityResult;
+        updateData.conformityDecisionRule = payload.conformityDecisionRule;
+        updateData.conformityNotes = payload.conformityNotes;
+        updateData.conformityEvaluatedBy = req.dbUser?.email || 'Unknown';
+        updateData.conformityEvaluatedAt = new Date().toISOString();
+        auditDetail = `Conformity evaluation finished with result: ${payload.conformityResult} using decision rule: ${payload.conformityDecisionRule}`;
+      } else if (currentStage === 'Review') {
+        updateData.reviewerName = req.dbUser?.email || 'Unknown';
+        updateData.reviewComments = payload.reviewComments;
+        updateData.reviewedAt = new Date().toISOString();
+        updateData.status = 'Technical Review';
+        auditDetail = `Technical review complete. Status set to Technical Review. Comments: "${payload.reviewComments}"`;
+      } else if (currentStage === 'SignOff') {
+        return res.status(400).json({ error: "Use /sign-off endpoint to perform signatory signoff" });
+      }
+      
+      // Append audit trail event
+      auditTrail.push({
+        timestamp: new Date().toISOString(),
+        user: req.dbUser?.email || 'Unknown',
+        action: `STAGE_TRANSITION_${currentStage}`,
+        stage: currentStage,
+        details: auditDetail,
+      });
+      
+      updateData.fullAuditTrail = JSON.stringify(auditTrail);
+      
+      await db.update(calibrationJobs)
+        .set(updateData)
+        .where(eq(calibrationJobs.jobId, jobId));
+        
+      res.json({ message: "Stage updated successfully", nextStage });
+    } catch (error: any) {
+      console.error("Failed to update calibration job stage:", error);
+      res.status(500).json({ error: "Failed to update calibration job stage", details: error.message });
+    }
+  });
+
+  app.post("/api/calibration-jobs/:id/sign-off", requireAuth, async (req: AuthRequest, res) => {
+    const role = req.dbUser?.role;
+    // Authorized Signatory role check
+    if (role !== 'Authorized Signatory' && role !== 'Super Administrator') {
+      return res.status(403).json({ error: "Forbidden: Only 'Authorized Signatory' or 'Super Administrator' roles can finalize and sign off calibration certificates." });
+    }
+    
+    const jobId = parseInt(req.params.id);
+    const { signatoryName, signatoryDesignation } = req.body;
+    
+    if (!signatoryName || !signatoryDesignation) {
+      return res.status(400).json({ error: "Signatory name and designation are required" });
+    }
+    
+    try {
+      const jobList = await db.select().from(calibrationJobs).where(eq(calibrationJobs.jobId, jobId));
+      if (jobList.length === 0) {
+        return res.status(404).json({ error: "Calibration job not found" });
+      }
+      
+      const job = jobList[0];
+      if (job.status === 'Signed Off') {
+        return res.status(400).json({ error: "This calibration job has already been signed off" });
+      }
+      
+      const auditTrail = JSON.parse(job.fullAuditTrail || '[]');
+      
+      // Generate secure tamper-proof e-signature hash
+      const timestamp = new Date().toISOString();
+      const payloadString = `${jobId}-${job.sensorId}-${job.measurements}-${job.conformityResult}-${signatoryName}-${signatoryDesignation}-${timestamp}`;
+      const eSignatureHash = crypto.createHmac('sha256', 'ISO17025_SECRET_KEY_METEOROLOGY')
+        .update(payloadString)
+        .digest('hex');
+        
+      auditTrail.push({
+        timestamp,
+        user: req.dbUser?.email || 'Unknown',
+        action: 'FINAL_SIGN_OFF',
+        stage: 'SignOff',
+        details: `Calibration job final authorization and electronic signature complete by ${signatoryName} (${signatoryDesignation}). Cryptographic Integrity Seal Hash: ${eSignatureHash.substring(0, 8)}...`
+      });
+      
+      // Update calibration job
+      await db.update(calibrationJobs)
+        .set({
+          status: 'Signed Off',
+          currentStage: 'SignOff',
+          signatoryName,
+          signatoryDesignation,
+          signedAt: timestamp,
+          eSignatureHash,
+          fullAuditTrail: JSON.stringify(auditTrail)
+        })
+        .where(eq(calibrationJobs.jobId, jobId));
+        
+      // Fetch sensor to update status and register the formal historical calibration record
+      const sensor = await db.select().from(sensorsInventory).where(eq(sensorsInventory.sensorId, job.sensorId));
+      if (sensor.length > 0) {
+        // Calculate next due date (default to 1 year from now)
+        const dateObj = new Date();
+        dateObj.setFullYear(dateObj.getFullYear() + 1);
+        const nextDueDate = dateObj.toISOString().substring(0, 10);
+        
+        // Insert into calibrations table so it shows up in general calibrations
+        await db.insert(calibrations)
+          .values({
+            sensorId: job.sensorId,
+            calibrationDate: timestamp.substring(0, 10),
+            technicianName: job.plannedCalibrator || 'System Calibrator',
+            result: job.conformityResult || 'Passed',
+            notes: `ISO/IEC 17025 Certified. Job #${jobId}. Signatory: ${signatoryName}, Seal Hash: ${eSignatureHash.substring(0, 12)}`,
+            nextDueDate,
+          });
+          
+        // Revert sensor status to Active (if passed/adjusted) or Maintenance (if failed)
+        let newStatus = "Active";
+        if (job.conformityResult === "Failed") {
+          newStatus = "Maintenance";
+        }
+        
+        const currentLog = sensor[0].statusLog || "";
+        const formattedTimestamp = timestamp.replace('T', ' ').substring(0, 19);
+        const logLine = `[${formattedTimestamp}] ISO/IEC 17025 Certified Calibration Job #${jobId} finalized. Result: '${job.conformityResult}'. Status set to '${newStatus}'. Signatory: ${signatoryName}.`;
+        const updatedLog = currentLog ? `${currentLog}\n${logLine}` : logLine;
+        
+        await db.update(sensorsInventory)
+          .set({
+            status: newStatus,
+            statusLog: updatedLog,
+            dismissedAlert: 'false'
+          })
+          .where(eq(sensorsInventory.sensorId, job.sensorId));
+          
+        // Write standard audit log
+        await createAuditLog(
+          'CALIBRATION_SIGN_OFF',
+          req.dbUser?.email || 'Unknown',
+          req.dbUser?.role || 'Unknown',
+          `ISO/IEC 17025 Calibration Job #${jobId} signed off for Sensor ID ${job.sensorId}. Signatory: ${signatoryName} (${signatoryDesignation}). Integrity Seal: ${eSignatureHash}`,
+          (req.headers['x-forwarded-for'] as string) || req.ip || null,
+          'Success'
+        );
+      }
+      
+      res.json({ message: "Calibration job successfully signed off and certified", eSignatureHash });
+    } catch (error: any) {
+      console.error("Failed to sign off calibration job:", error);
+      res.status(500).json({ error: "Failed to sign off calibration job", details: error.message });
+    }
+  });
+
+  app.post("/api/calibration-jobs/:id/cancel", requireAuth, async (req: AuthRequest, res) => {
+    const role = req.dbUser?.role;
+    if (role === 'Read-only/Audit User' || role === 'Supplier account') {
+      return res.status(403).json({ error: "Forbidden: You do not have permission to cancel calibration jobs." });
+    }
+    
+    const jobId = parseInt(req.params.id);
+    
+    try {
+      const jobList = await db.select().from(calibrationJobs).where(eq(calibrationJobs.jobId, jobId));
+      if (jobList.length === 0) {
+        return res.status(404).json({ error: "Calibration job not found" });
+      }
+      
+      const job = jobList[0];
+      const auditTrail = JSON.parse(job.fullAuditTrail || '[]');
+      
+      auditTrail.push({
+        timestamp: new Date().toISOString(),
+        user: req.dbUser?.email || 'Unknown',
+        action: 'CANCELLED',
+        stage: job.currentStage,
+        details: 'Calibration job cancelled by user.'
+      });
+      
+      await db.update(calibrationJobs)
+        .set({
+          status: 'Cancelled',
+          fullAuditTrail: JSON.stringify(auditTrail)
+        })
+        .where(eq(calibrationJobs.jobId, jobId));
+        
+      // Revert sensor status
+      const sensor = await db.select().from(sensorsInventory).where(eq(sensorsInventory.sensorId, job.sensorId));
+      if (sensor.length > 0) {
+        const currentLog = sensor[0].statusLog || "";
+        const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+        const logLine = `[${timestamp}] ISO/IEC 17025 Calibration Job #${jobId} cancelled. Status reverted to 'Active'.`;
+        const updatedLog = currentLog ? `${currentLog}\n${logLine}` : logLine;
+        
+        await db.update(sensorsInventory)
+          .set({
+            status: "Active",
+            statusLog: updatedLog
+          })
+          .where(eq(sensorsInventory.sensorId, job.sensorId));
+      }
+      
+      res.json({ message: "Calibration job successfully cancelled" });
+    } catch (error: any) {
+      console.error("Failed to cancel calibration job:", error);
+      res.status(500).json({ error: "Failed to cancel calibration job", details: error.message });
     }
   });
 
@@ -2550,6 +3438,188 @@ async function startServer() {
     }
   });
 
+  app.post("/api/warranty/trigger-claim-and-flag-supplier", requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const { jobId, sensorId, failureNotes } = req.body;
+
+      if (!sensorId) {
+        return res.status(400).json({ error: "Sensor ID is required" });
+      }
+
+      // Fetch sensor
+      const sensorQuery = await db.select().from(sensorsInventory).where(eq(sensorsInventory.sensorId, parseInt(sensorId)));
+      if (sensorQuery.length === 0) {
+        return res.status(404).json({ error: "Sensor not found" });
+      }
+      const sensor = sensorQuery[0];
+
+      // Verify warranty status
+      const today = new Date();
+      today.setHours(0,0,0,0);
+      const isWithinWarranty = sensor.warrantyEndDate && new Date(sensor.warrantyEndDate) >= today;
+
+      if (!isWithinWarranty) {
+        return res.status(400).json({ error: "Sensor is not within its warranty coverage window." });
+      }
+
+      // Search for supplier/manufacturer
+      const mfgName = sensor.manufacturer;
+      const supplierName = sensor.supplierDetails || mfgName;
+
+      let matchedSupplier: any = null;
+      const allSuppliersList = await db.select().from(suppliers);
+
+      // Try to find exact or fuzzy match
+      matchedSupplier = allSuppliersList.find(s => 
+        s.name.toLowerCase().trim() === supplierName.toLowerCase().trim() ||
+        s.name.toLowerCase().trim() === mfgName.toLowerCase().trim()
+      );
+
+      if (!matchedSupplier) {
+        // Try substring match
+        matchedSupplier = allSuppliersList.find(s => 
+          s.name.toLowerCase().includes(supplierName.toLowerCase()) || 
+          supplierName.toLowerCase().includes(s.name.toLowerCase()) ||
+          s.name.toLowerCase().includes(mfgName.toLowerCase())
+        );
+      }
+
+      let supplierFlagged = false;
+      let scoreCardCreated = false;
+      let supplierId = null;
+
+      if (matchedSupplier) {
+        supplierId = matchedSupplier.id;
+        // Flag the supplier by setting status to 'Under Review'
+        await db.update(suppliers)
+          .set({ status: 'Under Review' })
+          .where(eq(suppliers.id, supplierId));
+
+        supplierFlagged = true;
+
+        // Insert automatic scorecard evaluation with low scores due to critical failure
+        const evalDate = new Date().toISOString().split('T')[0];
+        await db.insert(supplierEvaluations).values({
+          supplierId: supplierId,
+          evaluationDate: evalDate,
+          evaluatorEmail: req.dbUser?.email || 'system@metis.gov',
+          qualityScore: 1.0, // Failed calibration / conformity
+          deliveryScore: 4.0, // Default average
+          responseScore: 2.0, // Prompt for repair needed
+          supportScore: 1.0,  // Bad quality support
+          overallScore: 2.0,  // calculated average
+          feedback: `AUTOMATIC CRITICAL QUALITY FLAG: Sensor S/N ${sensor.serialNumber || 'N/A'} (Model: ${sensor.modelNumber || 'N/A'}, Type: ${sensor.sensorType}) failed critical ISO/IEC 17025 Conformity Evaluation tests in the Calibration Lab (Job ID: #${jobId || 'N/A'}). Calibration Maximum Permissible Error (MPE) thresholds were exceeded. Formal warranty claim filed.`
+        });
+
+        scoreCardCreated = true;
+
+        // Re-calculate the supplier's overall scores in suppliers table
+        const allEvals = await db.select().from(supplierEvaluations).where(eq(supplierEvaluations.supplierId, supplierId));
+        if (allEvals.length > 0) {
+          const avgQuality = allEvals.reduce((sum, e) => sum + e.qualityScore, 0) / allEvals.length;
+          const avgDelivery = allEvals.reduce((sum, e) => sum + e.deliveryScore, 0) / allEvals.length;
+          const avgOverall = allEvals.reduce((sum, e) => sum + e.overallScore, 0) / allEvals.length;
+
+          await db.update(suppliers).set({
+            qualityRating: avgQuality,
+            deliveryPerformance: avgDelivery,
+            performanceRating: avgOverall
+          }).where(eq(suppliers.id, supplierId));
+        }
+
+        // Create an audit log
+        await createAuditLog(
+          'SUPPLIER_UPDATE',
+          req.dbUser?.email || 'System',
+          req.dbUser?.role || 'System',
+          `Supplier '${matchedSupplier.name}' flagged to 'Under Review' and automatic low-performance scorecard registered due to ISO/IEC 17025 Calibration Failure on Sensor ID ${sensor.sensorId}.`,
+          (req.headers['x-forwarded-for'] as string) || req.ip || null,
+          'Success'
+        );
+      } else {
+        // No matching supplier in database, log audit about it
+        await createAuditLog(
+          'SUPPLIER_UPDATE',
+          req.dbUser?.email || 'System',
+          req.dbUser?.role || 'System',
+          `Warning: Calibration failure occurred for Sensor ID ${sensor.sensorId} under warranty, but supplier/manufacturer '${supplierName}' was not found in the Suppliers & Partners registry to flag.`,
+          (req.headers['x-forwarded-for'] as string) || req.ip || null,
+          'Success'
+        );
+      }
+
+      // Respond with the prefilled claim template info
+      res.json({
+        success: true,
+        isWithinWarranty: true,
+        supplierFlagged,
+        scoreCardCreated,
+        supplierName: matchedSupplier ? matchedSupplier.name : supplierName,
+        supplierId,
+        claimTemplate: {
+          claimId: `WCL-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
+          sensorId: sensor.sensorId,
+          sensorType: sensor.sensorType,
+          serialNumber: sensor.serialNumber,
+          modelNumber: sensor.modelNumber,
+          manufacturer: sensor.manufacturer,
+          procurementDate: sensor.procurementDate,
+          warrantyStartDate: sensor.warrantyStartDate,
+          warrantyEndDate: sensor.warrantyEndDate,
+          invoiceReference: sensor.invoiceReference,
+          failureNotes: failureNotes || 'Failed ISO/IEC 17025 Conformity Evaluation tests in the Calibration Lab.',
+          calibrationJobId: jobId,
+          supplierName: matchedSupplier ? matchedSupplier.name : supplierName,
+          supplierEmail: matchedSupplier ? matchedSupplier.email : 'support@supplier.com',
+          contactName: matchedSupplier ? matchedSupplier.contactName : 'Warranty Claims Dept',
+          todayDate: new Date().toISOString().split('T')[0]
+        }
+      });
+    } catch (error: any) {
+      console.error("Failed to trigger warranty claim & flag supplier:", error);
+      res.status(500).json({ error: "Failed to process warranty linkage", details: error.message });
+    }
+  });
+
+  app.post("/api/warranty/submit-claim", requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const { claimId, sensorId, supplierName, notes } = req.body;
+      if (!sensorId || !claimId) {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      const sensorObj = await db.select().from(sensorsInventory).where(eq(sensorsInventory.sensorId, parseInt(sensorId)));
+      if (sensorObj.length === 0) {
+        return res.status(404).json({ error: "Sensor not found" });
+      }
+
+      const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+      const logLine = `[${timestamp}] WARRANTY CLAIM FILED (${claimId}) against supplier '${supplierName}'. Status set to 'Under Repair'. Detail: ${notes || 'None'}`;
+      const currentLog = sensorObj[0].statusLog || "";
+
+      await db.update(sensorsInventory)
+        .set({
+          status: 'Under Repair',
+          statusLog: currentLog ? `${currentLog}\n${logLine}` : logLine
+        })
+        .where(eq(sensorsInventory.sensorId, parseInt(sensorId)));
+
+      await createAuditLog(
+        'WARRANTY_CLAIM',
+        req.dbUser?.email || 'Unknown',
+        req.dbUser?.role || 'Unknown',
+        `Warranty Claim ${claimId} successfully filed for Sensor ID ${sensorId} against supplier '${supplierName}'.`,
+        (req.headers['x-forwarded-for'] as string) || req.ip || null,
+        'Success'
+      );
+
+      res.json({ success: true, message: "Warranty claim logged successfully." });
+    } catch (error: any) {
+      console.error("Failed to submit claim:", error);
+      res.status(500).json({ error: "Failed to log warranty claim", details: error.message });
+    }
+  });
+
   app.put("/api/suppliers/agreements/:id", requireAuth, async (req: AuthRequest, res) => {
     try {
       const agreementId = parseInt(req.params.id);
@@ -3090,6 +4160,358 @@ async function startServer() {
     } catch (error: any) {
       console.error("Failed to delete document:", error);
       res.status(500).json({ error: "Failed to delete document", details: error.message });
+    }
+  });
+
+  // --- WMO Siting Classification & Installation Planning Endpoints ---
+
+  app.put("/api/sensors/:id/wmo-siting", requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const sensorId = parseInt(req.params.id);
+      if (isNaN(sensorId)) return res.status(400).json({ error: "Invalid sensor ID" });
+
+      const { wmoSitingClass, wmoChecklist } = req.body;
+
+      const [existingSensor] = await db.select().from(sensorsInventory).where(eq(sensorsInventory.sensorId, sensorId));
+      if (!existingSensor) return res.status(404).json({ error: "Sensor not found" });
+
+      await db.update(sensorsInventory).set({
+        wmoSitingClass: wmoSitingClass || null,
+        wmoChecklist: wmoChecklist ? JSON.stringify(wmoChecklist) : null
+      }).where(eq(sensorsInventory.sensorId, sensorId));
+
+      await createAuditLog(
+        'WMO_SITING_EVALUATION',
+        req.dbUser?.email || 'Unknown',
+        req.dbUser?.role || 'Unknown',
+        `Evaluated WMO-No. 8 Siting Class for Sensor ID ${sensorId} (${existingSensor.sensorType} S/N: ${existingSensor.serialNumber || 'N/A'}). Siting Class calculated as: ${wmoSitingClass || 'None'}.`,
+        (req.headers['x-forwarded-for'] as string) || req.ip || null,
+        'Success'
+      );
+
+      res.json({ success: true, message: "WMO Siting evaluation saved successfully." });
+    } catch (error: any) {
+      console.error("Failed to update WMO siting class:", error);
+      res.status(500).json({ error: "Failed to update WMO siting class", details: error.message });
+    }
+  });
+
+  app.get("/api/installation-projects", requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const projects = await db.select().from(installationProjects).orderBy(desc(installationProjects.createdAt));
+      res.json(projects);
+    } catch (error: any) {
+      console.error("Failed to fetch installation projects:", error);
+      res.status(500).json({ error: "Failed to fetch installation projects", details: error.message });
+    }
+  });
+
+  app.post("/api/installation-projects", requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const { projectName, targetStationId, status, dataLoggerModel, solarPanelModel, enclosureModel, sensorIds, scheduledDate, notes } = req.body;
+      if (!projectName) {
+        return res.status(400).json({ error: "Project name is required" });
+      }
+
+      const [newProject] = await db.insert(installationProjects).values({
+        projectName,
+        targetStationId: targetStationId ? parseInt(targetStationId) : null,
+        status: status || 'Draft',
+        dataLoggerModel: dataLoggerModel || null,
+        solarPanelModel: solarPanelModel || null,
+        enclosureModel: enclosureModel || null,
+        sensorIds: sensorIds || null,
+        compatibilityStatus: 'Unknown',
+        compatibilityReport: null,
+        scheduledDate: scheduledDate || null,
+        notes: notes || null,
+      }).returning();
+
+      await createAuditLog(
+        'INSTALLATION_PROJECT_CREATE',
+        req.dbUser?.email || 'Unknown',
+        req.dbUser?.role || 'Unknown',
+        `Created Installation Project "${projectName}".`,
+        (req.headers['x-forwarded-for'] as string) || req.ip || null,
+        'Success'
+      );
+
+      res.status(201).json(newProject);
+    } catch (error: any) {
+      console.error("Failed to create installation project:", error);
+      res.status(500).json({ error: "Failed to create installation project", details: error.message });
+    }
+  });
+
+  app.put("/api/installation-projects/:id", requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid project ID" });
+
+      const { projectName, targetStationId, status, dataLoggerModel, solarPanelModel, enclosureModel, sensorIds, scheduledDate, notes } = req.body;
+
+      const [existing] = await db.select().from(installationProjects).where(eq(installationProjects.id, id));
+      if (!existing) return res.status(404).json({ error: "Installation project not found" });
+
+      const updatedFields: any = {
+        projectName: projectName || existing.projectName,
+        targetStationId: targetStationId !== undefined ? (targetStationId ? parseInt(targetStationId) : null) : existing.targetStationId,
+        status: status || existing.status,
+        dataLoggerModel: dataLoggerModel !== undefined ? dataLoggerModel : existing.dataLoggerModel,
+        solarPanelModel: solarPanelModel !== undefined ? solarPanelModel : existing.solarPanelModel,
+        enclosureModel: enclosureModel !== undefined ? enclosureModel : existing.enclosureModel,
+        sensorIds: sensorIds !== undefined ? sensorIds : existing.sensorIds,
+        scheduledDate: scheduledDate !== undefined ? scheduledDate : existing.scheduledDate,
+        notes: notes !== undefined ? notes : existing.notes,
+      };
+
+      const [updated] = await db.update(installationProjects).set(updatedFields).where(eq(installationProjects.id, id)).returning();
+
+      await createAuditLog(
+        'INSTALLATION_PROJECT_UPDATE',
+        req.dbUser?.email || 'Unknown',
+        req.dbUser?.role || 'Unknown',
+        `Updated Installation Project "${updated.projectName}".`,
+        (req.headers['x-forwarded-for'] as string) || req.ip || null,
+        'Success'
+      );
+
+      res.json(updated);
+    } catch (error: any) {
+      console.error("Failed to update installation project:", error);
+      res.status(500).json({ error: "Failed to update installation project", details: error.message });
+    }
+  });
+
+  app.delete("/api/installation-projects/:id", requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid project ID" });
+
+      const [existing] = await db.select().from(installationProjects).where(eq(installationProjects.id, id));
+      if (!existing) return res.status(404).json({ error: "Installation project not found" });
+
+      await db.delete(installationProjects).where(eq(installationProjects.id, id));
+
+      await createAuditLog(
+        'INSTALLATION_PROJECT_DELETE',
+        req.dbUser?.email || 'Unknown',
+        req.dbUser?.role || 'Unknown',
+        `Deleted Installation Project "${existing.projectName}".`,
+        (req.headers['x-forwarded-for'] as string) || req.ip || null,
+        'Success'
+      );
+
+      res.json({ success: true, message: "Installation project deleted successfully." });
+    } catch (error: any) {
+      console.error("Failed to delete installation project:", error);
+      res.status(500).json({ error: "Failed to delete installation project", details: error.message });
+    }
+  });
+
+  app.post("/api/installation-projects/:id/validate", requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid project ID" });
+
+      const [project] = await db.select().from(installationProjects).where(eq(installationProjects.id, id));
+      if (!project) return res.status(404).json({ error: "Installation project not found" });
+
+      // Gather bundled sensors
+      const sensorIdArr = project.sensorIds 
+        ? project.sensorIds.split(',').map(s => parseInt(s.trim())).filter(s => !isNaN(s))
+        : [];
+
+      const bundledSensors: any[] = [];
+      const validationItems: any[] = [];
+      let overallStatus: 'Valid' | 'Warnings' | 'Invalid' = 'Valid';
+
+      for (const sId of sensorIdArr) {
+        const [sensor] = await db.select().from(sensorsInventory).where(eq(sensorsInventory.sensorId, sId));
+        if (sensor) {
+          bundledSensors.push(sensor);
+        } else {
+          validationItems.push({
+            type: 'sensor_missing',
+            severity: 'error',
+            message: `Sensor ID #${sId} specified in bundle was not found in active inventory registry.`
+          });
+          overallStatus = 'Invalid';
+        }
+      }
+
+      // Check each sensor's health, calibration, warranty, and WMO status
+      for (const s of bundledSensors) {
+        // 1. Calibration status check
+        if (s.status === 'In Calibration' || s.status === 'Retired' || s.status === 'Maintenance') {
+          validationItems.push({
+            type: 'sensor_status_unusable',
+            severity: 'error',
+            sensorId: s.sensorId,
+            sensorType: s.sensorType,
+            serialNumber: s.serialNumber,
+            message: `Sensor ${s.sensorType} S/N ${s.serialNumber || 'N/A'} is currently marked '${s.status}'. It cannot be deployed to the field.`
+          });
+          overallStatus = 'Invalid';
+        } else {
+          // Check if calibration due date is expired or close
+          const today = new Date();
+          const sensorCalibrations = await db.select().from(calibrations).where(eq(calibrations.sensorId, s.sensorId)).orderBy(desc(calibrations.calibrationDate));
+          if (sensorCalibrations.length > 0) {
+            const latestCal = sensorCalibrations[0];
+            const dueDate = new Date(latestCal.nextDueDate);
+            dueDate.setHours(0,0,0,0);
+            if (dueDate < today) {
+              validationItems.push({
+                type: 'calibration_expired',
+                severity: 'error',
+                sensorId: s.sensorId,
+                sensorType: s.sensorType,
+                serialNumber: s.serialNumber,
+                message: `Calibration certificate has EXPIRED on ${latestCal.nextDueDate} for ${s.sensorType} S/N ${s.serialNumber || 'N/A'}. Field deployment blocked.`
+              });
+              overallStatus = 'Invalid';
+            } else {
+              const diffTime = Math.abs(dueDate.getTime() - today.getTime());
+              const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+              if (diffDays <= 30) {
+                validationItems.push({
+                  type: 'calibration_expiring_soon',
+                  severity: 'warning',
+                  sensorId: s.sensorId,
+                  sensorType: s.sensorType,
+                  serialNumber: s.serialNumber,
+                  message: `Calibration for ${s.sensorType} S/N ${s.serialNumber || 'N/A'} is expiring soon in ${diffDays} days (${latestCal.nextDueDate}).`
+                });
+                if (overallStatus !== 'Invalid') overallStatus = 'Warnings';
+              }
+            }
+          } else {
+            validationItems.push({
+              type: 'no_calibration_history',
+              severity: 'warning',
+              sensorId: s.sensorId,
+              sensorType: s.sensorType,
+              serialNumber: s.serialNumber,
+              message: `No calibration record found in the lab registry for ${s.sensorType} S/N ${s.serialNumber || 'N/A'}. Highly recommended to calibrate before field installation.`
+            });
+            if (overallStatus !== 'Invalid') overallStatus = 'Warnings';
+          }
+        }
+
+        // 2. Warranty warning check
+        const today = new Date();
+        today.setHours(0,0,0,0);
+        const isUnderWarranty = s.warrantyEndDate && new Date(s.warrantyEndDate) >= today;
+        if (!isUnderWarranty) {
+          validationItems.push({
+            type: 'warranty_expired',
+            severity: 'info',
+            sensorId: s.sensorId,
+            sensorType: s.sensorType,
+            serialNumber: s.serialNumber,
+            message: `Procurement warranty has expired or is not registered for ${s.sensorType} S/N ${s.serialNumber || 'N/A'}.`
+          });
+        }
+
+        // 3. Siting check warning
+        if (!s.wmoSitingClass) {
+          validationItems.push({
+            type: 'no_wmo_siting_classification',
+            severity: 'warning',
+            sensorId: s.sensorId,
+            sensorType: s.sensorType,
+            serialNumber: s.serialNumber,
+            message: `WMO Siting Classification Engine checklist is incomplete for ${s.sensorType} S/N ${s.serialNumber || 'N/A'}. Metadata data quality is untracked.`
+          });
+          if (overallStatus !== 'Invalid') overallStatus = 'Warnings';
+        }
+      }
+
+      // Physical data logger channels constraints check
+      const dl = (project.dataLoggerModel || '').toLowerCase();
+      const totalSensorsCount = bundledSensors.length;
+      if (totalSensorsCount > 6) {
+        validationItems.push({
+          type: 'logger_channel_overload',
+          severity: 'warning',
+          message: `Bundled sensors count (${totalSensorsCount}) exceeds standard data logger analog/digital port capacity limit (6 channel max). Check terminal multiplexer availability.`
+        });
+        if (overallStatus !== 'Invalid') overallStatus = 'Warnings';
+      }
+
+      // Check sensor type conflicts
+      const sensorTypeCounts: { [key: string]: number } = {};
+      bundledSensors.forEach(s => {
+        sensorTypeCounts[s.sensorType] = (sensorTypeCounts[s.sensorType] || 0) + 1;
+      });
+      Object.entries(sensorTypeCounts).forEach(([type, count]) => {
+        if (count > 2) {
+          validationItems.push({
+            type: 'sensor_redundancy_warning',
+            severity: 'warning',
+            message: `Multiple (${count}) sensors of type '${type}' are bundled together. Verify if redundant channel logging is correctly configured on the datalogger program.`
+          });
+          if (overallStatus !== 'Invalid') overallStatus = 'Warnings';
+        }
+      });
+
+      // Power compatibility check
+      const sp = (project.solarPanelModel || '').toLowerCase();
+      let hasSonicOrRadar = bundledSensors.some(s => {
+        const st = (s.sensorType || '').toLowerCase();
+        const sm = (s.modelNumber || '').toLowerCase();
+        return st.includes('radar') || st.includes('ultrasonic') || st.includes('sonic') || sm.includes('sonic');
+      });
+
+      if (sp.includes('10w') || sp.includes('20w') || !sp) {
+        if (hasSonicOrRadar || totalSensorsCount >= 4) {
+          validationItems.push({
+            type: 'power_deficit_warning',
+            severity: 'warning',
+            message: `Low capacity solar panel (${project.solarPanelModel || 'Not Specified'}) paired with high-draw components or numerous sensors (${totalSensorsCount} sensors). Winter/monsoon power budget deficit warning.`
+          });
+          if (overallStatus !== 'Invalid') overallStatus = 'Warnings';
+        }
+      }
+
+      // Success messages
+      if (validationItems.length === 0) {
+        validationItems.push({
+          type: 'all_systems_green',
+          severity: 'success',
+          message: "All bundled items are fully calibrated, warrantied, WMO evaluated, and fully compatible. Pack the truck!"
+        });
+      }
+
+      const reportJSON = JSON.stringify({
+        validatedAt: new Date().toISOString(),
+        validatedBy: req.dbUser?.email || 'System',
+        items: validationItems
+      });
+
+      await db.update(installationProjects).set({
+        compatibilityStatus: overallStatus,
+        compatibilityReport: reportJSON
+      }).where(eq(installationProjects.id, id));
+
+      await createAuditLog(
+        'INSTALLATION_PROJECT_VALIDATE',
+        req.dbUser?.email || 'Unknown',
+        req.dbUser?.role || 'Unknown',
+        `Evaluated compatibility of Project ID ${id} ("${project.projectName}"). Verdict: ${overallStatus}.`,
+        (req.headers['x-forwarded-for'] as string) || req.ip || null,
+        'Success'
+      );
+
+      res.json({
+        success: true,
+        compatibilityStatus: overallStatus,
+        compatibilityReport: JSON.parse(reportJSON)
+      });
+    } catch (error: any) {
+      console.error("Failed to validate installation project:", error);
+      res.status(500).json({ error: "Failed to validate installation project", details: error.message });
     }
   });
 

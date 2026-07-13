@@ -10,7 +10,6 @@ import {
   ShieldCheck,
   Compass,
   Bell,
-  ClipboardCheck,
   Activity,
   History,
   Truck,
@@ -23,13 +22,18 @@ import {
   BarChart3,
   Handshake,
   ChevronLeft,
-  FolderOpen
+  FolderOpen,
+  Gauge,
+  Wrench,
+  CheckSquare,
+  ClipboardList,
+  Coins
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 
 interface SidebarProps {
-  activeView: 'dashboard' | 'inventory' | 'alerts' | 'registration' | 'status-tracking' | 'deployments' | 'transfers' | 'administration' | 'warranty' | 'gis' | 'notifications' | 'reports' | 'audit' | 'suppliers' | 'requisitions' | 'stations' | 'documents';
-  setActiveView: (view: 'dashboard' | 'inventory' | 'alerts' | 'registration' | 'status-tracking' | 'deployments' | 'transfers' | 'administration' | 'warranty' | 'gis' | 'notifications' | 'reports' | 'audit' | 'suppliers' | 'requisitions' | 'stations' | 'documents') => void;
+  activeView: 'dashboard' | 'inventory' | 'alerts' | 'registration' | 'lifecycle' | 'status-tracking' | 'deployments' | 'transfers' | 'administration' | 'warranty' | 'gis' | 'notifications' | 'reports' | 'audit' | 'suppliers' | 'requisitions' | 'stations' | 'documents' | 'calibration-lab' | 'installation-planning' | 'capital-budgeting';
+  setActiveView: (view: 'dashboard' | 'inventory' | 'alerts' | 'registration' | 'lifecycle' | 'status-tracking' | 'deployments' | 'transfers' | 'administration' | 'warranty' | 'gis' | 'notifications' | 'reports' | 'audit' | 'suppliers' | 'requisitions' | 'stations' | 'documents' | 'calibration-lab' | 'installation-planning' | 'capital-budgeting') => void;
   user: User | null;
   role: string | null;
   onLogin: () => void;
@@ -124,6 +128,19 @@ export default function Sidebar({
             </button>
 
             <button
+              id="nav-installation-planning-btn"
+              onClick={() => setActiveView('installation-planning')}
+              className={`w-full flex items-center space-x-3 px-4 py-2.5 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer ${
+                activeView === 'installation-planning'
+                  ? 'bg-white/5 border border-white/10 text-white shadow-xs'
+                  : 'text-zinc-400 border border-transparent hover:text-white hover:bg-white/[0.02]'
+              }`}
+            >
+              <Wrench className="h-4 w-4 shrink-0 text-teal-400 animate-pulse" />
+              <span>Installation Planner</span>
+            </button>
+
+            <button
               id="nav-inventory-btn"
               onClick={() => setActiveView('inventory')}
               className={`w-full flex items-center space-x-3 px-4 py-2.5 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer ${
@@ -137,55 +154,16 @@ export default function Sidebar({
             </button>
 
             <button
-              id="nav-registration-btn"
-              onClick={() => setActiveView('registration')}
+              id="nav-lifecycle-btn"
+              onClick={() => setActiveView('lifecycle')}
               className={`w-full flex items-center space-x-3 px-4 py-2.5 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer ${
-                activeView === 'registration'
-                  ? 'bg-white/5 border border-white/10 text-white shadow-xs'
-                  : 'text-zinc-400 border border-transparent hover:text-white hover:bg-white/[0.02]'
-              }`}
-            >
-              <ClipboardCheck className="h-4 w-4 shrink-0 text-blue-500" />
-              <span>Sensor Registration</span>
-            </button>
-
-            <button
-              id="nav-status-tracking-btn"
-              onClick={() => setActiveView('status-tracking')}
-              className={`w-full flex items-center space-x-3 px-4 py-2.5 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer ${
-                activeView === 'status-tracking'
-                  ? 'bg-white/5 border border-white/10 text-white shadow-xs'
-                  : 'text-zinc-400 border border-transparent hover:text-white hover:bg-white/[0.02]'
-              }`}
-            >
-              <Activity className="h-4 w-4 shrink-0 text-emerald-500" />
-              <span>Sensor Status Tracking</span>
-            </button>
-
-            <button
-              id="nav-deployments-btn"
-              onClick={() => setActiveView('deployments')}
-              className={`w-full flex items-center space-x-3 px-4 py-2.5 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer ${
-                activeView === 'deployments'
+                activeView === 'lifecycle' || activeView === 'status-tracking' || activeView === 'deployments' || activeView === 'transfers'
                   ? 'bg-white/5 border border-white/10 text-white shadow-xs'
                   : 'text-zinc-400 border border-transparent hover:text-white hover:bg-white/[0.02]'
               }`}
             >
               <History className="h-4 w-4 shrink-0 text-indigo-400" />
-              <span>Deployment Record</span>
-            </button>
-
-            <button
-              id="nav-transfers-btn"
-              onClick={() => setActiveView('transfers')}
-              className={`w-full flex items-center space-x-3 px-4 py-2.5 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer ${
-                activeView === 'transfers'
-                  ? 'bg-white/5 border border-white/10 text-white shadow-xs'
-                  : 'text-zinc-400 border border-transparent hover:text-white hover:bg-white/[0.02]'
-              }`}
-            >
-              <Truck className="h-4 w-4 shrink-0 text-amber-500" />
-              <span>Transfer Management</span>
+              <span>Sensor Lifecycle Manager</span>
             </button>
 
             <button
@@ -251,6 +229,32 @@ export default function Sidebar({
             >
               <FolderOpen className="h-4 w-4 shrink-0 text-blue-400" />
               <span>Documents Registry</span>
+            </button>
+
+            <button
+              id="nav-calibration-lab-btn"
+              onClick={() => setActiveView('calibration-lab')}
+              className={`w-full flex items-center space-x-3 px-4 py-2.5 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer ${
+                activeView === 'calibration-lab'
+                  ? 'bg-white/5 border border-white/10 text-white shadow-xs'
+                  : 'text-zinc-400 border border-transparent hover:text-white hover:bg-white/[0.02]'
+              }`}
+            >
+              <Gauge className="h-4 w-4 shrink-0 text-indigo-400" />
+              <span>Calibration Lab</span>
+            </button>
+
+            <button
+              id="nav-capital-budgeting-btn"
+              onClick={() => setActiveView('capital-budgeting')}
+              className={`w-full flex items-center space-x-3 px-4 py-2.5 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer ${
+                activeView === 'capital-budgeting'
+                  ? 'bg-white/5 border border-white/10 text-white shadow-xs'
+                  : 'text-zinc-400 border border-transparent hover:text-white hover:bg-white/[0.02]'
+              }`}
+            >
+              <Coins className="h-4 w-4 shrink-0 text-blue-500" />
+              <span className="font-semibold text-blue-400">Capital Budgeting</span>
             </button>
 
             <button

@@ -19,13 +19,13 @@ interface ModalsProps {
   stations: WeatherStation[];
   sensors: Sensor[];
   selectedSensorForCalibId?: number | null;
-  onSubmitAddStation: (data: { stationName: string; region: string; latitude: number; longitude: number; batteryVoltageType?: string; batteryCurrentVoltage?: number; stationType?: string }) => Promise<void>;
+  onSubmitAddStation: (data: { stationName: string; region: string; latitude: number; longitude: number; batteryVoltageType?: string; batteryCurrentVoltage?: number; stationType?: string; regionalOfficeId?: number | null }) => Promise<void>;
   onSubmitAddSensor: (data: { sensorType: string; manufacturer: string; status: string; stationId: number | null }) => Promise<void>;
   onSubmitEditSensor: (sensorId: number, data: { sensorType: string; manufacturer: string; status: string; stationId: number | null }) => Promise<void>;
   onSubmitLogCalibration: (data: { sensorId: number; calibrationDate: string; technicianName: string; result: string; notes: string; nextDueDate: string }) => Promise<void>;
   editingSensor?: Sensor | null;
   editingStation?: WeatherStation | null;
-  onSubmitEditStation?: (stationId: number, data: { stationName: string; region: string; latitude: number; longitude: number; batteryVoltageType?: string; batteryCurrentVoltage?: number; stationType?: string }) => Promise<void>;
+  onSubmitEditStation?: (stationId: number, data: { stationName: string; region: string; latitude: number; longitude: number; batteryVoltageType?: string; batteryCurrentVoltage?: number; stationType?: string; regionalOfficeId?: number | null }) => Promise<void>;
 }
 
 export default function Modals({
@@ -53,6 +53,19 @@ export default function Modals({
   const [batteryVoltageType, setBatteryVoltageType] = useState('12V');
   const [batteryCurrentVoltage, setBatteryCurrentVoltage] = useState('12.0');
   const [stationType, setStationType] = useState('Climate');
+  const [stationRegionalOfficeId, setStationRegionalOfficeId] = useState<string>('');
+  const [regionalOffices, setRegionalOffices] = useState<any[]>([]);
+
+  useEffect(() => {
+    fetch('/api/regional-offices')
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setRegionalOffices(data);
+        }
+      })
+      .catch(err => console.error("Failed to fetch regional offices in Modals.tsx:", err));
+  }, []);
 
   // Form states - Sensor
   const [sensorType, setSensorType] = useState('Platinum Resistance Thermometer');
@@ -104,6 +117,7 @@ export default function Modals({
       setBatteryVoltageType(editingStation.batteryVoltageType || '12V');
       setBatteryCurrentVoltage(editingStation.batteryCurrentVoltage !== undefined && editingStation.batteryCurrentVoltage !== null ? editingStation.batteryCurrentVoltage.toString() : '12.0');
       setStationType(editingStation.stationType || 'Climate');
+      setStationRegionalOfficeId(editingStation.regionalOfficeId ? editingStation.regionalOfficeId.toString() : '');
     } else if (modalType === 'add-station') {
       setStationName('');
       setStationRegion('');
@@ -112,6 +126,7 @@ export default function Modals({
       setBatteryVoltageType('12V');
       setBatteryCurrentVoltage('12.0');
       setStationType('Climate');
+      setStationRegionalOfficeId('');
     } else if (modalType === 'log-calibration') {
       if (selectedSensorForCalibId) {
         setCalSensorId(selectedSensorForCalibId.toString());
@@ -153,6 +168,7 @@ export default function Modals({
           batteryVoltageType,
           batteryCurrentVoltage: isNaN(parsedBatteryCurrentVoltage) ? undefined : parsedBatteryCurrentVoltage,
           stationType,
+          regionalOfficeId: stationRegionalOfficeId ? parseInt(stationRegionalOfficeId) : null,
         });
       } else if (modalType === 'edit-station' && editingStation && onSubmitEditStation) {
         await onSubmitEditStation(editingStation.stationId, {
@@ -163,6 +179,7 @@ export default function Modals({
           batteryVoltageType,
           batteryCurrentVoltage: isNaN(parsedBatteryCurrentVoltage) ? undefined : parsedBatteryCurrentVoltage,
           stationType,
+          regionalOfficeId: stationRegionalOfficeId ? parseInt(stationRegionalOfficeId) : null,
         });
       }
       // reset
@@ -362,6 +379,23 @@ export default function Modals({
                   <option value="Aero-synoptic">Aero-synoptic</option>
                   <option value="Agromet">Agromet</option>
                   <option value="precipitation">precipitation</option>
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest font-mono block">Assigned Regional Office</label>
+                <select
+                  id="modal-station-regional-office"
+                  value={stationRegionalOfficeId}
+                  onChange={(e) => setStationRegionalOfficeId(e.target.value)}
+                  className="w-full bg-[#131316] border border-[#1f1f23] text-white focus:border-blue-500/50 rounded-md py-2 px-3 text-sm focus:outline-none transition"
+                >
+                  <option value="">-- No Assigned Regional Office --</option>
+                  {regionalOffices.map((ro) => (
+                    <option key={ro.id} value={ro.id}>
+                      {ro.officeName}
+                    </option>
+                  ))}
                 </select>
               </div>
 

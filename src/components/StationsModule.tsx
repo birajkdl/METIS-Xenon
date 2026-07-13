@@ -18,7 +18,11 @@ import {
   Wrench,
   FileText,
   Calendar,
-  Activity
+  Activity,
+  Mail,
+  Phone,
+  Globe,
+  Building
 } from 'lucide-react';
 import { WeatherStation, Sensor } from '../types.ts';
 
@@ -49,6 +53,93 @@ export default function StationsModule({
   const [updatingStationId, setUpdatingStationId] = useState<number | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [updateSuccessId, setUpdateSuccessId] = useState<number | null>(null);
+
+  // Regional Offices Local States
+  const [activeTab, setActiveTab] = useState<'stations' | 'offices'>('stations');
+  const [offices, setOffices] = useState<any[]>([]);
+  const [loadingOffices, setLoadingOffices] = useState(false);
+  const [selectedOffice, setSelectedOffice] = useState<any | null>(null);
+  const [officeSubTab, setOfficeSubTab] = useState<'sensors' | 'stations'>('sensors');
+
+  // Form states - Add Regional Office
+  const [showAddOfficeModal, setShowAddOfficeModal] = useState(false);
+  const [newOfficeName, setNewOfficeName] = useState('');
+  const [newOfficeAddress, setNewOfficeAddress] = useState('');
+  const [newOfficePhone, setNewOfficePhone] = useState('');
+  const [newOfficeEmail, setNewOfficeEmail] = useState('');
+  const [newOfficeWebsite, setNewOfficeWebsite] = useState('');
+  const [officeError, setOfficeError] = useState<string | null>(null);
+  const [officeSuccess, setOfficeSuccess] = useState<string | null>(null);
+
+  const fetchOffices = async () => {
+    setLoadingOffices(true);
+    try {
+      const res = await fetch('/api/regional-offices', {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setOffices(data);
+      }
+    } catch (err) {
+      console.error("Failed to load regional offices:", err);
+    } finally {
+      setLoadingOffices(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchOffices();
+  }, [token]);
+
+  const handleAddOffice = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!token) return;
+    if (!newOfficeName.trim()) {
+      setOfficeError("Office name is required.");
+      return;
+    }
+
+    setOfficeError(null);
+    setOfficeSuccess(null);
+
+    try {
+      const res = await fetch('/api/regional-offices', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          officeName: newOfficeName.trim(),
+          address: newOfficeAddress.trim(),
+          phone: newOfficePhone.trim(),
+          email: newOfficeEmail.trim(),
+          website: newOfficeWebsite.trim()
+        })
+      });
+
+      if (res.ok) {
+        setOfficeSuccess("Regional office added successfully!");
+        setNewOfficeName('');
+        setNewOfficeAddress('');
+        setNewOfficePhone('');
+        setNewOfficeEmail('');
+        setNewOfficeWebsite('');
+        setTimeout(() => {
+          setShowAddOfficeModal(false);
+          setOfficeSuccess(null);
+        }, 1200);
+        await fetchOffices();
+        onRefreshData(); // Propagate to trigger station metadata dropdown refresh
+      } else {
+        const data = await res.json();
+        setOfficeError(data.error || "Failed to register regional office.");
+      }
+    } catch (err) {
+      setOfficeError("Failed to connect to network services.");
+    }
+  };
 
   // Activity Timeline Supplementary States
   const [allCalibrations, setAllCalibrations] = useState<any[]>([]);
@@ -314,6 +405,51 @@ export default function StationsModule({
     }
   };
 
+  const getStationStatus = (station: WeatherStation) => {
+    const stationSensors = sensors.filter(s => s.stationId === station.stationId);
+    
+    if (station.batteryCurrentVoltage !== undefined && station.batteryCurrentVoltage !== null) {
+      if (station.batteryCurrentVoltage < 11.2) {
+        return 'Offline';
+      }
+      if (station.batteryCurrentVoltage < 11.6) {
+        return 'Maintenance';
+      }
+    }
+    
+    const hasMaintenance = stationSensors.some(s => s.status === 'Maintenance');
+    if (hasMaintenance) {
+      return 'Maintenance';
+    }
+
+    if (stationSensors.length === 0 || stationSensors.every(s => s.status === 'Retired')) {
+      return 'Offline';
+    }
+
+    const seed = station.stationId;
+    if (seed % 17 === 0) {
+      return 'Maintenance';
+    }
+    if (seed % 23 === 0) {
+      return 'Offline';
+    }
+
+    return 'Online';
+  };
+
+  const getStationStatusBadgeClass = (status: string) => {
+    switch (status) {
+      case 'Online':
+        return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
+      case 'Offline':
+        return 'bg-red-500/10 text-red-400 border-red-500/20';
+      case 'Maintenance':
+        return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
+      default:
+        return 'bg-zinc-500/10 text-zinc-400 border-zinc-500/20';
+    }
+  };
+
   return (
     <div id="stations-module-container" className="space-y-6">
       {/* Header Banner */}
@@ -338,8 +474,29 @@ export default function StationsModule({
         )}
       </div>
 
-      {/* Main Grid: Split Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      {/* Tab Navigation */}
+      <div className="flex border-b border-[#1f1f23] space-x-6">
+        <button
+          onClick={() => { setActiveTab('stations'); setSelectedOffice(null); }}
+          className={`pb-3 text-xs font-mono tracking-wider uppercase font-semibold border-b-2 transition-all cursor-pointer ${
+            activeTab === 'stations' ? 'border-blue-500 text-white' : 'border-transparent text-zinc-500 hover:text-zinc-300'
+          }`}
+        >
+          Stations Directory
+        </button>
+        <button
+          onClick={() => setActiveTab('offices')}
+          className={`pb-3 text-xs font-mono tracking-wider uppercase font-semibold border-b-2 transition-all cursor-pointer ${
+            activeTab === 'offices' ? 'border-blue-500 text-white' : 'border-transparent text-zinc-500 hover:text-zinc-300'
+          }`}
+        >
+          Regional Offices
+        </button>
+      </div>
+
+      {/* VIEW 1: STATIONS DIRECTORY */}
+      {activeTab === 'stations' && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left Side: Stations Directory (5 cols) */}
         <div className="lg:col-span-5 space-y-4">
           <div className="bg-[#0b0b0e] border border-[#1f1f23] rounded-lg p-4 space-y-4">
@@ -399,6 +556,8 @@ export default function StationsModule({
                   const activeSensorsCount = sensors.filter(s => s.stationId === station.stationId && s.status === 'Active').length;
                   const type = station.stationType || 'Climate';
 
+                  const stationStatus = getStationStatus(station);
+
                   return (
                     <div
                       key={station.stationId}
@@ -418,9 +577,14 @@ export default function StationsModule({
                             {station.region}
                           </span>
                         </div>
-                        <span className={`text-[9px] font-mono px-2 py-0.5 rounded border ${getStationTypeBadgeClass(type)}`}>
-                          {type}
-                        </span>
+                        <div className="flex flex-col items-end gap-1.5 shrink-0">
+                          <span className={`text-[9px] font-mono px-2 py-0.5 rounded border ${getStationTypeBadgeClass(type)}`}>
+                            {type}
+                          </span>
+                          <span className={`text-[9px] font-mono px-2 py-0.5 rounded border uppercase ${getStationStatusBadgeClass(stationStatus)}`}>
+                            {stationStatus}
+                          </span>
+                        </div>
                       </div>
 
                       {/* Info bar */}
@@ -456,6 +620,9 @@ export default function StationsModule({
                     <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${getStationTypeBadgeClass(activeStation.stationType)}`}>
                       {activeStation.stationType || 'Climate'}
                     </span>
+                    <span className={`text-[10px] font-mono px-2 py-0.5 rounded border uppercase ${getStationStatusBadgeClass(getStationStatus(activeStation))}`}>
+                      {getStationStatus(activeStation)}
+                    </span>
                   </div>
                   <div className="flex items-center gap-1.5 mt-1 text-xs text-zinc-400 font-mono">
                     <MapPin className="h-3.5 w-3.5 text-blue-400" />
@@ -474,7 +641,7 @@ export default function StationsModule({
                     className="px-3 py-1.5 bg-[#131316] hover:bg-zinc-800 text-zinc-300 hover:text-white border border-[#1f1f23] rounded-md text-xs font-semibold transition cursor-pointer flex items-center gap-1.5"
                   >
                     <Settings className="h-3.5 w-3.5 text-zinc-500" />
-                    Configure Node
+                    Configure Station
                   </button>
                 )}
               </div>
@@ -703,6 +870,344 @@ export default function StationsModule({
           )}
         </div>
       </div>
+      )}
+
+      {/* VIEW 2: REGIONAL OFFICES */}
+      {activeTab === 'offices' && (
+        <div className="space-y-6 animate-fade-in">
+          {/* Offices List Panel */}
+          <div className="bg-[#0b0b0e] border border-[#1f1f23] rounded-lg p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-serif italic text-white">Regional Offices Network</h3>
+                <p className="text-xs text-zinc-500 font-mono mt-1">Manage physical regional headquarters and inspect assigned station/spare parts assets.</p>
+              </div>
+              <button
+                onClick={() => setShowAddOfficeModal(true)}
+                className="flex items-center gap-2 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-md text-xs font-semibold transition cursor-pointer shadow-lg shadow-blue-600/10"
+              >
+                <Plus className="h-4 w-4" />
+                <span>Add regional Offices</span>
+              </button>
+            </div>
+
+            {loadingOffices ? (
+              <div className="py-12 flex items-center justify-center space-x-2 text-zinc-500 font-mono text-xs">
+                <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                <span>Polling directories...</span>
+              </div>
+            ) : offices.length === 0 ? (
+              <div className="py-16 text-center bg-[#08080a] border border-[#17171c] rounded-md">
+                <Building className="h-10 w-10 text-zinc-700 mx-auto mb-3" />
+                <p className="text-xs text-zinc-500 font-medium">No regional offices registered in network registry.</p>
+                <p className="text-[10px] text-zinc-600 mt-1">Click the "+ Add regional Offices" button to register headquarters.</p>
+              </div>
+            ) : (
+              <div className="border border-[#17171c] rounded-lg overflow-hidden bg-[#09090c]">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-[#0c0c0f] border-b border-[#1f1f23] text-[10px] text-zinc-400 font-mono tracking-wider uppercase">
+                      <th className="py-3 px-4 font-medium">Office Name</th>
+                      <th className="py-3 px-4 font-medium">Address</th>
+                      <th className="py-3 px-4 font-medium">Phone number</th>
+                      <th className="py-3 px-4 font-medium">Email ID</th>
+                      <th className="py-3 px-4 font-medium">website</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#131317] text-xs">
+                    {offices.map((o) => (
+                      <tr key={o.id} className="hover:bg-white/[0.01] transition-all">
+                        {/* Column 1: Clickable Office Name */}
+                        <td className="py-3.5 px-4">
+                          <button
+                            onClick={() => {
+                              setSelectedOffice(o);
+                              setOfficeSubTab('sensors');
+                            }}
+                            className="font-semibold text-blue-400 hover:text-blue-300 text-left cursor-pointer hover:underline transition-all"
+                          >
+                            {o.officeName}
+                          </button>
+                        </td>
+                        {/* Column 2: Address */}
+                        <td className="py-3.5 px-4 text-zinc-400 font-sans max-w-xs truncate">
+                          {o.address || <span className="text-zinc-600 font-mono text-[11px]">-</span>}
+                        </td>
+                        {/* Column 3: Phone Number */}
+                        <td className="py-3.5 px-4 text-zinc-300 font-mono text-[11px]">
+                          {o.phone ? (
+                            <div className="flex items-center space-x-1">
+                              <Phone className="h-3 w-3 text-zinc-500" />
+                              <span>{o.phone}</span>
+                            </div>
+                          ) : (
+                            <span className="text-zinc-600 font-mono text-[11px]">-</span>
+                          )}
+                        </td>
+                        {/* Column 4: Email */}
+                        <td className="py-3.5 px-4 text-zinc-300 font-mono text-[11px]">
+                          {o.email ? (
+                            <div className="flex items-center space-x-1">
+                              <Mail className="h-3 w-3 text-zinc-500" />
+                              <a href={`mailto:${o.email}`} className="hover:underline hover:text-blue-400">{o.email}</a>
+                            </div>
+                          ) : (
+                            <span className="text-zinc-600 font-mono text-[11px]">-</span>
+                          )}
+                        </td>
+                        {/* Column 5: Website */}
+                        <td className="py-3.5 px-4 text-zinc-300 font-mono text-[11px]">
+                          {o.website ? (
+                            <div className="flex items-center space-x-1">
+                              <Globe className="h-3 w-3 text-zinc-500" />
+                              <a href={o.website.startsWith('http') ? o.website : `https://${o.website}`} target="_blank" rel="noreferrer" className="hover:underline hover:text-blue-400">
+                                {o.website}
+                              </a>
+                            </div>
+                          ) : (
+                            <span className="text-zinc-600 font-mono text-[11px]">-</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Drilldown Sub-view for Selected Office */}
+          {selectedOffice && (
+            <div className="bg-[#0b0b0e] border border-[#1f1f23] rounded-lg p-6 space-y-6 animate-fade-in">
+              <div className="flex items-center justify-between border-b border-[#1f1f23] pb-4">
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <span className="px-1.5 py-0.5 bg-blue-500/10 text-blue-400 border border-blue-500/20 text-[8px] font-mono rounded uppercase font-bold">Office Core</span>
+                    <h4 className="text-lg font-serif italic text-white">{selectedOffice.officeName}</h4>
+                  </div>
+                  <p className="text-xs text-zinc-500 font-sans mt-0.5">{selectedOffice.address || 'No location address recorded.'}</p>
+                </div>
+                <button
+                  onClick={() => setSelectedOffice(null)}
+                  className="px-3 py-1 bg-white/5 hover:bg-white/10 text-zinc-400 rounded-md text-xs font-mono cursor-pointer transition animate-pulse"
+                >
+                  Close Office View ×
+                </button>
+              </div>
+
+              {/* Nested Sub-tabs */}
+              <div className="flex space-x-4 border-b border-[#17171c] pb-2">
+                <button
+                  onClick={() => setOfficeSubTab('sensors')}
+                  className={`pb-2 text-[11px] font-mono tracking-wider uppercase font-bold border-b-2 transition-all cursor-pointer ${
+                    officeSubTab === 'sensors' ? 'border-blue-500 text-white' : 'border-transparent text-zinc-500 hover:text-zinc-300'
+                  }`}
+                >
+                  Sensors/Spare Parts
+                </button>
+                <button
+                  onClick={() => setOfficeSubTab('stations')}
+                  className={`pb-2 text-[11px] font-mono tracking-wider uppercase font-bold border-b-2 transition-all cursor-pointer ${
+                    officeSubTab === 'stations' ? 'border-blue-500 text-white' : 'border-transparent text-zinc-500 hover:text-zinc-300'
+                  }`}
+                >
+                  Stations
+                </button>
+              </div>
+
+              {/* Sub-tab 1: Sensors / Spare Parts list */}
+              {officeSubTab === 'sensors' && (() => {
+                const assignedSensors = sensors.filter(s => s.regionalOfficeId === selectedOffice.id);
+                return (
+                  <div className="space-y-4">
+                    <div>
+                      <h5 className="text-xs font-mono font-bold text-zinc-400 uppercase tracking-wider">Assigned Inventory & Spare Parts ({assignedSensors.length})</h5>
+                      <p className="text-zinc-500 text-[11px] mt-0.5">Physical telemetry assets assigned to or logged under this regional hub's jurisdiction.</p>
+                    </div>
+
+                    {assignedSensors.length === 0 ? (
+                      <div className="p-8 bg-[#08080a] border border-[#17171c] rounded-md text-center">
+                        <Cpu className="h-8 w-8 text-zinc-800 mx-auto mb-2" />
+                        <p className="text-xs text-zinc-500 font-medium">No hardware sensors assigned to this regional office.</p>
+                        <p className="text-[10px] text-zinc-600 mt-0.5">Sensors with matching user-office attributes are routed here automatically during inventory cataloging.</p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {assignedSensors.map(sensor => (
+                          <div key={sensor.sensorId} className="bg-[#08080a] border border-[#131316] p-4 rounded-md flex justify-between items-start hover:border-zinc-800 transition">
+                            <div className="space-y-1">
+                              <span className="text-xs font-semibold text-white block">
+                                {sensor.sensorName || sensor.sensorType}
+                              </span>
+                              <div className="flex flex-col space-y-1 text-[10px] font-mono text-zinc-500">
+                                <span>Type: {sensor.sensorType}</span>
+                                <span>S/N: {sensor.serialNumber || 'N/A'}</span>
+                                <span>Manufacturer: {sensor.manufacturer}</span>
+                                <span>Station: {sensor.stationName ? <span className="text-blue-400">{sensor.stationName}</span> : <span className="text-amber-500/80 font-semibold">[Spare Part / In Storage]</span>}</span>
+                              </div>
+                            </div>
+                            <span className="text-[9px] font-mono px-2 py-0.5 rounded border uppercase shrink-0 bg-zinc-900 text-zinc-300">
+                              {sensor.status}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Sub-tab 2: Stations list */}
+              {officeSubTab === 'stations' && (() => {
+                const assignedStations = stations.filter(st => st.regionalOfficeId === selectedOffice.id);
+                return (
+                  <div className="space-y-4">
+                    <div>
+                      <h5 className="text-xs font-mono font-bold text-zinc-400 uppercase tracking-wider">Assigned Network Stations ({assignedStations.length})</h5>
+                      <p className="text-zinc-500 text-[11px] mt-0.5">Active meteorological telemetry nodes directly reporting to this regional office.</p>
+                    </div>
+
+                    {assignedStations.length === 0 ? (
+                      <div className="p-8 bg-[#08080a] border border-[#17171c] rounded-md text-center">
+                        <MapPin className="h-8 w-8 text-zinc-800 mx-auto mb-2" />
+                        <p className="text-xs text-zinc-500 font-medium">No weather stations currently assigned to this office.</p>
+                        <p className="text-[10px] text-zinc-600 mt-0.5">Assign stations directly by editing station profiles or during registration.</p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {assignedStations.map(station => {
+                          const stationStatus = getStationStatus(station);
+                          return (
+                            <div key={station.stationId} className="bg-[#08080a] border border-[#131316] p-4 rounded-md space-y-3 hover:border-zinc-800 transition">
+                              <div className="flex justify-between items-start">
+                                <div>
+                                  <span className="text-xs font-semibold text-white block">{station.stationName}</span>
+                                  <span className="text-[10px] text-zinc-500 font-mono">{station.region}</span>
+                                </div>
+                                <div className="flex flex-col items-end gap-1 shrink-0">
+                                  <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono uppercase border ${getStationTypeBadgeClass(station.stationType)}`}>
+                                    {station.stationType || 'Climate'}
+                                  </span>
+                                  <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono uppercase border ${getStationStatusBadgeClass(stationStatus)}`}>
+                                    {stationStatus}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="flex justify-between text-[10px] font-mono text-zinc-500 border-t border-[#131316] pt-2">
+                                <span>Lat: {station.latitude}</span>
+                                <span>Lon: {station.longitude}</span>
+                                <span className="text-blue-400">{station.sensorCount || 0} Sensors</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
+          {/* ADD REGIONAL OFFICE MODAL OVERLAY */}
+          {showAddOfficeModal && (
+            <div className="fixed inset-0 bg-black/85 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+              <div className="bg-[#09090c] border border-[#1f1f23] rounded-xl max-w-md w-full p-6 shadow-2xl relative space-y-6">
+                <div>
+                  <h4 className="font-serif text-lg text-white">+ Register Regional Office</h4>
+                  <p className="text-xs text-zinc-500 font-mono mt-1">Catalog a new regional administration headquarters within the network grid.</p>
+                </div>
+
+                {officeError && (
+                  <div className="p-3 bg-red-500/10 border border-red-500/20 text-red-400 text-xs rounded-lg font-sans">
+                    {officeError}
+                  </div>
+                )}
+                {officeSuccess && (
+                  <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs rounded-lg font-sans">
+                    {officeSuccess}
+                  </div>
+                )}
+
+                <form onSubmit={handleAddOffice} className="space-y-4 text-xs">
+                  <div className="space-y-1.5">
+                    <label className="text-zinc-400 font-medium">Office Name *</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Kathmandu AWS Hub"
+                      required
+                      value={newOfficeName}
+                      onChange={(e) => setNewOfficeName(e.target.value)}
+                      className="w-full bg-[#131316] border border-[#1f1f23] text-white p-2.5 rounded-lg focus:outline-none focus:border-blue-500 text-xs"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-zinc-400 font-medium">Office Address</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Babarmahal, Kathmandu"
+                      value={newOfficeAddress}
+                      onChange={(e) => setNewOfficeAddress(e.target.value)}
+                      className="w-full bg-[#131316] border border-[#1f1f23] text-white p-2.5 rounded-lg focus:outline-none focus:border-blue-500 text-xs"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-zinc-400 font-medium">Phone Number</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. +977 1-421570"
+                      value={newOfficePhone}
+                      onChange={(e) => setNewOfficePhone(e.target.value)}
+                      className="w-full bg-[#131316] border border-[#1f1f23] text-white p-2.5 rounded-lg focus:outline-none focus:border-blue-500 text-xs"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-zinc-400 font-medium">Email ID</label>
+                      <input
+                        type="email"
+                        placeholder="e.g. contact@dhm.gov.np"
+                        value={newOfficeEmail}
+                        onChange={(e) => setNewOfficeEmail(e.target.value)}
+                        className="w-full bg-[#131316] border border-[#1f1f23] text-white p-2.5 rounded-lg focus:outline-none focus:border-blue-500 text-xs font-mono"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-zinc-400 font-medium">Website URL</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. dhm.gov.np"
+                        value={newOfficeWebsite}
+                        onChange={(e) => setNewOfficeWebsite(e.target.value)}
+                        className="w-full bg-[#131316] border border-[#1f1f23] text-white p-2.5 rounded-lg focus:outline-none focus:border-blue-500 text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-3 pt-4 border-t border-[#1f1f23] mt-6">
+                    <button
+                      type="button"
+                      onClick={() => setShowAddOfficeModal(false)}
+                      className="px-4 py-2 bg-white/5 hover:bg-white/10 text-zinc-300 rounded-md font-semibold cursor-pointer transition"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-md font-semibold cursor-pointer transition shadow-lg shadow-blue-600/20"
+                    >
+                      Register Office
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

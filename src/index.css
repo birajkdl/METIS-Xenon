@@ -259,4 +259,246 @@ body {
   filter: drop-shadow(0 10px 12px rgba(0, 0, 0, 0.75)) drop-shadow(0 4px 5px rgba(0, 0, 0, 0.65)) !important;
 }
 
+/* ==========================================================================
+   PRINT STYLESHEET (Physical Paper Formatting Override)
+   ========================================================================== */
+
+@media print {
+  /* Force light/monochrome backgrounds and high-contrast text to save ink and guarantee legibility */
+  html, body, #root, 
+  [class*="bg-[#050505]"], 
+  [class*="bg-[#0a0a0c]"], 
+  [class*="bg-[#0c0c0e]"], 
+  [class*="bg-[#0f0f12]"], 
+  [class*="bg-[#121215]"], 
+  [class*="bg-black"], 
+  [class*="bg-zinc-900"], 
+  [class*="bg-zinc-950"], 
+  [class*="bg-slate-50"] {
+    background: #ffffff !important;
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    font-family: var(--font-sans), system-ui, -apple-system, sans-serif !important;
+  }
+
+  /* Reset layout constraints to ensure multi-page document flows perfectly without getting cut off */
+  html, body, #root, 
+  .flex, 
+  .flex-col, 
+  .grid, 
+  .overflow-hidden, 
+  .overflow-y-auto, 
+  [class*="h-screen"], 
+  [class*="max-h-"], 
+  [class*="overflow-y-auto"], 
+  [class*="overflow-hidden"], 
+  [class*="flex-1"] {
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    position: static !important;
+    display: block !important;
+    float: none !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+  }
+
+  /* Page Setup & Margins */
+  @page {
+    size: portrait;
+    margin: 15mm 12mm 15mm 12mm;
+  }
+
+  /* Hide non-essential, interactive, and navigation elements */
+  aside,
+  header,
+  nav,
+  button,
+  form,
+  .print\:hidden,
+  [class*="border-[#1f1f23]"] button,
+  .no-print,
+  .leaflet-control-container,
+  .qr-scanner-overlay,
+  .toast-container,
+  .notifications-indicator,
+  .badge-action,
+  .interactive-btn,
+  .search-container,
+  #global-search-input,
+  .tabs-navigation,
+  .pagination-container,
+  [class*="bg-[#0c0c0e]"] button,
+  .shrink-0 {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    overflow: hidden !important;
+    visibility: hidden !important;
+  }
+
+  /* Text and Font Overrides for Pristine Contrast */
+  h1, h2, h3, h4, h5, h6, p, span, strong, div, td, th, label, time, dt, dd {
+    color: #000000 !important;
+    text-shadow: none !important;
+    font-smoothing: antialiased !important;
+  }
+
+  h1 {
+    font-size: 18pt !important;
+    line-height: 1.2 !important;
+    margin-bottom: 10pt !important;
+    font-weight: 700 !important;
+  }
+
+  h2 {
+    font-size: 14pt !important;
+    line-height: 1.3 !important;
+    margin-top: 12pt !important;
+    margin-bottom: 6pt !important;
+    font-weight: 600 !important;
+    border-bottom: 1px solid #cbd5e1 !important;
+    padding-bottom: 3pt !important;
+  }
+
+  h3 {
+    font-size: 11pt !important;
+    line-height: 1.4 !important;
+    margin-top: 8pt !important;
+    margin-bottom: 3pt !important;
+    font-weight: 600 !important;
+  }
+
+  /* Card, Grid, and Container Styling */
+  .card, 
+  [class*="bg-[#0b0b0e]"], 
+  [class*="bg-[#0f0f12]"], 
+  [class*="bg-[#121215]"], 
+  [class*="bg-[#131316]"], 
+  [class*="bg-zinc-"], 
+  [class*="bg-black/40"],
+  [class*="border-[#1f1f23]"],
+  [class*="border-[#27272a]"],
+  .border-zinc-800,
+  .border-zinc-900 {
+    background: #ffffff !important;
+    background-color: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+    box-shadow: none !important;
+    border-radius: 4px !important;
+    margin-bottom: 12pt !important;
+    padding: 10pt !important;
+    page-break-inside: avoid !important;
+  }
+
+  /* Grid layout adaptations for paper (avoid multi-column truncation) */
+  .grid {
+    display: block !important;
+    width: 100% !important;
+  }
+
+  /* Spacing overrides to avoid giant gaps */
+  .p-8, .p-6, .p-4 {
+    padding: 8pt !important;
+  }
+  
+  .gap-8, .gap-6, .gap-4 {
+    gap: 10pt !important;
+  }
+
+  /* Clean Table Formatting */
+  table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    margin: 12pt 0 !important;
+    page-break-inside: auto !important;
+  }
+
+  tr {
+    page-break-inside: avoid !important;
+    page-break-after: auto !important;
+  }
+
+  thead {
+    display: table-header-group !important;
+  }
+
+  tfoot {
+    display: table-footer-group !important;
+  }
+
+  th, td {
+    padding: 6pt 5pt !important;
+    text-align: left !important;
+    font-size: 8.5pt !important;
+    border-bottom: 1px solid #cbd5e1 !important;
+  }
+
+  th {
+    background-color: #f1f5f9 !important;
+    font-weight: 700 !important;
+    color: #0f172a !important;
+    border-top: 1px solid #cbd5e1 !important;
+  }
+
+  tbody tr:nth-child(even) {
+    background-color: #f8fafc !important;
+  }
+
+  /* Recharts and SVG optimizations */
+  svg {
+    max-width: 100% !important;
+    height: auto !important;
+  }
+
+  .recharts-cartesian-grid-horizontal line,
+  .recharts-cartesian-grid-vertical line {
+    stroke: #cbd5e1 !important;
+    stroke-dasharray: none !important;
+  }
+
+  .recharts-text {
+    fill: #000000 !important;
+    font-size: 7.5pt !important;
+  }
+
+  /* Badge/Semantic formatting */
+  .badge,
+  [class*="bg-emerald-500"],
+  [class*="bg-amber-500"],
+  [class*="bg-red-500"],
+  [class*="bg-blue-500"],
+  [class*="bg-purple-500"],
+  [class*="text-emerald-400"],
+  [class*="text-amber-400"],
+  [class*="text-red-400"] {
+    background: transparent !important;
+    border: 1px solid #cbd5e1 !important;
+    color: #000000 !important;
+    font-weight: bold !important;
+    padding: 1px 4px !important;
+    border-radius: 2px !important;
+    font-size: 7.5pt !important;
+  }
+
+  /* Map Optimization (Ensure dynamic maps don't break prints) */
+  .leaflet-container {
+    border: 1px solid #cbd5e1 !important;
+    height: 300px !important;
+    background: #f8fafc !important;
+    page-break-inside: avoid !important;
+  }
+
+  /* Force print custom header block */
+  .print-header-block {
+    display: block !important;
+    border-bottom: 2px solid #000000 !important;
+    margin-bottom: 15pt !important;
+    padding-bottom: 8pt !important;
+  }
+}
+
 

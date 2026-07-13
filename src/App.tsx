@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { 
   signInWithPopup, 
   signOut, 
@@ -19,7 +20,9 @@ import {
   Settings,
   Info,
   ChevronRight,
-  Menu
+  Menu,
+  Save,
+  Check
 } from 'lucide-react';
 import {
   LineChart,
@@ -36,9 +39,7 @@ import Dashboard from './components/Dashboard.tsx';
 import InventoryList from './components/InventoryList.tsx';
 import AlertsView from './components/AlertsView.tsx';
 import SensorRegistration from './components/SensorRegistration.tsx';
-import StatusTracking from './components/StatusTracking.tsx';
-import DeploymentManagement from './components/DeploymentManagement.tsx';
-import TransferManagement from './components/TransferManagement.tsx';
+import SensorLifecycleManager from './components/SensorLifecycleManager.tsx';
 import Administration from './components/Administration.tsx';
 import WarrantyManagement from './components/WarrantyManagement.tsx';
 import GisMap from './components/GisMap.tsx';
@@ -52,10 +53,13 @@ import AuditTrailPanel from './components/AuditTrailPanel.tsx';
 import SupplierManagement from './components/SupplierManagement.tsx';
 import StationsModule from './components/StationsModule.tsx';
 import DocumentsModule from './components/DocumentsModule.tsx';
+import CalibrationLab from './components/CalibrationLab.tsx';
+import InstallationPlanner from './components/InstallationPlanner.tsx';
+import CapitalBudgeting from './components/CapitalBudgeting.tsx';
 import { DashboardStats, WeatherStation, Sensor } from './types.ts';
 
 export default function App() {
-  const [activeView, setActiveView] = useState<'dashboard' | 'inventory' | 'alerts' | 'registration' | 'status-tracking' | 'deployments' | 'transfers' | 'administration' | 'warranty' | 'gis' | 'notifications' | 'reports' | 'audit' | 'suppliers' | 'stations' | 'documents'>('dashboard');
+  const [activeView, setActiveView] = useState<'dashboard' | 'inventory' | 'alerts' | 'registration' | 'lifecycle' | 'status-tracking' | 'deployments' | 'transfers' | 'administration' | 'warranty' | 'gis' | 'notifications' | 'reports' | 'audit' | 'suppliers' | 'stations' | 'documents' | 'calibration-lab' | 'installation-planning' | 'capital-budgeting'>('dashboard');
   
   // Theme state: default to 'dark', save to localStorage
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
@@ -131,9 +135,17 @@ export default function App() {
   const [quickViewSensor, setQuickViewSensor] = useState<Sensor | null>(null);
   const [quickViewSensorCalibrations, setQuickViewSensorCalibrations] = useState<any[]>([]);
   const [loadingQuickViewCalibrations, setLoadingQuickViewCalibrations] = useState(false);
+  const [quickNoteValue, setQuickNoteValue] = useState('');
+  const [savingQuickNote, setSavingQuickNote] = useState(false);
+  const [quickNoteSuccess, setQuickNoteSuccess] = useState(false);
+  const [quickNoteError, setQuickNoteError] = useState<string | null>(null);
+  const [incomingWarrantyClaim, setIncomingWarrantyClaim] = useState<any | null>(null);
 
   useEffect(() => {
     if (quickViewSensor) {
+      setQuickNoteValue(quickViewSensor.quickNote || '');
+      setQuickNoteSuccess(false);
+      setQuickNoteError(null);
       setLoadingQuickViewCalibrations(true);
       fetch('/api/calibrations')
         .then(res => {
@@ -177,6 +189,39 @@ export default function App() {
       setGisFocusStationId(null);
     }
   }, [activeView]);
+
+  const handleSaveQuickNote = async () => {
+    if (!quickViewSensor) return;
+    setSavingQuickNote(true);
+    setQuickNoteSuccess(false);
+    setQuickNoteError(null);
+    try {
+      const res = await fetch(`/api/sensors/${quickViewSensor.sensorId}/quick-note`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ quickNote: quickNoteValue }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to save diagnostic comment');
+      }
+
+      const updatedSensor = await res.json();
+      setQuickViewSensor(updatedSensor);
+      setQuickNoteSuccess(true);
+      
+      // Update global sensors state so that any component displaying this sensor is refreshed
+      setSensors(prev => prev.map(s => s.sensorId === updatedSensor.sensorId ? updatedSensor : s));
+    } catch (err: any) {
+      console.error(err);
+      setQuickNoteError(err.message || 'Failed to save note');
+    } finally {
+      setSavingQuickNote(false);
+    }
+  };
 
   // 1. Listen to Firebase Auth state
   useEffect(() => {
@@ -272,7 +317,7 @@ export default function App() {
 
   // Submissions (Gated with Firebase JWT)
 
-  const handleAddStationSubmit = async (data: { stationName: string; region: string; latitude: number; longitude: number; batteryVoltageType?: string; batteryCurrentVoltage?: number; stationType?: string }) => {
+  const handleAddStationSubmit = async (data: { stationName: string; region: string; latitude: number; longitude: number; batteryVoltageType?: string; batteryCurrentVoltage?: number; stationType?: string; regionalOfficeId?: number | null }) => {
     if (!token) throw new Error("You must lock in credentials before editing.");
     const res = await fetch('/api/stations', {
       method: 'POST',
@@ -291,7 +336,7 @@ export default function App() {
     await fetchData(); // Refresh
   };
 
-  const handleEditStationSubmit = async (stationId: number, data: { stationName: string; region: string; latitude: number; longitude: number; batteryVoltageType?: string; batteryCurrentVoltage?: number; stationType?: string }) => {
+  const handleEditStationSubmit = async (stationId: number, data: { stationName: string; region: string; latitude: number; longitude: number; batteryVoltageType?: string; batteryCurrentVoltage?: number; stationType?: string; regionalOfficeId?: number | null }) => {
     if (!token) throw new Error("You must lock in credentials before editing.");
     const res = await fetch(`/api/stations/${stationId}`, {
       method: 'PUT',
@@ -610,6 +655,61 @@ export default function App() {
           </div>
         </header>
 
+        {/* PRINT ONLY SYSTEM REPORT BANNER */}
+        <div className="hidden print:block border-b-2 border-black pb-4 mb-6 print-header-block">
+          <div className="flex justify-between items-start">
+            <div>
+              <h1 className="text-2xl font-bold font-serif tracking-tight text-black m-0 leading-tight">
+                METIS
+              </h1>
+              <p className="text-[10px] font-mono tracking-widest text-zinc-600 uppercase mt-0.5">
+                Meteorological Telemetry & Instrument Suite
+              </p>
+            </div>
+            <div className="text-right">
+              <span className="text-[9px] font-mono font-bold uppercase tracking-wider text-black border border-black bg-zinc-100 px-1.5 py-0.5 rounded">
+                Official Departmental Record
+              </span>
+            </div>
+          </div>
+          
+          <div className="mt-6 pt-4 border-t border-dashed border-zinc-300 grid grid-cols-2 gap-4 text-xs font-mono">
+            <div>
+              <p className="text-zinc-500 text-[10px] uppercase font-bold tracking-wider">Report Classification</p>
+              <p className="font-semibold text-black mt-0.5">RESTRICTED — INTERNAL METEOROLOGICAL SERVICE USE ONLY</p>
+            </div>
+            <div>
+              <p className="text-zinc-500 text-[10px] uppercase font-bold tracking-wider">Printed Document Title</p>
+              <p className="font-semibold text-black mt-0.5">
+                {activeView === 'dashboard' ? "Executive Performance & Operations Summary" :
+                 activeView === 'stations' ? "Meteorological Terminal Registry & Hardware Ledger" :
+                 activeView === 'inventory' ? "Central Physical Telemetry Instrument Inventory" :
+                 activeView === 'alerts' ? "Active System Alerts & Diagnostic Exception Ledger" :
+                 activeView === 'status-tracking' ? "Operational Status Tracking & Equipment Lifespan Logs" :
+                 activeView === 'deployments' ? "Sensor Deployment & Station Allocation History" :
+                 activeView === 'transfers' ? "Inter-agency Logistics & Hardware Transfer Ledger" :
+                 activeView === 'administration' ? "User Security Authorization & Access Control Logs" :
+                 activeView === 'warranty' ? "Asset Warranty Protection & Lifecycle Audits" :
+                 activeView === 'notifications' ? "System Dispatch Logs & Broadcast Audits" :
+                 activeView === 'reports' ? "Comprehensive Sensor & Station Analytics Report" :
+                 activeView === 'audit' ? "System Compliance & Database Transaction Log Trail" :
+                 activeView === 'suppliers' ? "Supplier & Procurement Vendor Registry" :
+                 activeView === 'documents' ? "Standard Operating Procedures & Manuals" :
+                 activeView === 'calibration-lab' ? "Meteorological Calibration Lab & Reference Equipment Registry" :
+                 "Meteorological Instrument Service Log"}
+              </p>
+            </div>
+            <div>
+              <p className="text-zinc-500 text-[10px] uppercase font-bold tracking-wider">Generated On</p>
+              <p className="font-semibold text-black mt-0.5">{new Date().toLocaleString()}</p>
+            </div>
+            <div>
+              <p className="text-zinc-500 text-[10px] uppercase font-bold tracking-wider">Requested By</p>
+              <p className="font-semibold text-black mt-0.5">{user?.email || dbUser?.email || "Authenticated METIS Administrator"}</p>
+            </div>
+          </div>
+        </div>
+
         {activeView === 'dashboard' ? (
           <Dashboard
             stats={stats}
@@ -703,6 +803,9 @@ export default function App() {
             setGlobalSearchQuery={setGSearchQuery}
             activeTabProp={invActiveTab}
             setActiveTabProp={setInvActiveTab}
+            onOpenSensorRegistration={() => {
+              setActiveView('registration');
+            }}
           />
         ) : activeView === 'alerts' ? (
           <AlertsView
@@ -712,28 +815,12 @@ export default function App() {
             onDismissAlert={handleDismissAlert}
             onRefresh={fetchData}
           />
-        ) : activeView === 'status-tracking' ? (
-          <StatusTracking
+        ) : (activeView === 'status-tracking' || activeView === 'deployments' || activeView === 'transfers' || activeView === 'lifecycle') ? (
+          <SensorLifecycleManager
             sensors={sensors}
             stations={stations}
             isAuthenticated={!!token}
             onUpdateSensor={handleEditSensorSubmit}
-            onRefresh={fetchData}
-            token={token}
-          />
-        ) : activeView === 'deployments' ? (
-          <DeploymentManagement
-            sensors={sensors}
-            stations={stations}
-            isAuthenticated={!!token}
-            onRefresh={fetchData}
-            token={token}
-          />
-        ) : activeView === 'transfers' ? (
-          <TransferManagement
-            sensors={sensors}
-            stations={stations}
-            isAuthenticated={!!token}
             onRefresh={fetchData}
             token={token}
           />
@@ -755,6 +842,8 @@ export default function App() {
               isAuthenticated={!!token}
               onRefresh={fetchData}
               token={token}
+              prefilledWarrantyClaim={incomingWarrantyClaim}
+              onClearPrefilledClaim={() => setIncomingWarrantyClaim(null)}
             />
           </div>
         ) : activeView === 'notifications' ? (
@@ -791,6 +880,39 @@ export default function App() {
               stations={stations}
               sensors={sensors}
               theme={theme}
+            />
+          </div>
+        ) : activeView === 'calibration-lab' ? (
+          <div className="flex-1 overflow-y-auto p-6 bg-zinc-50 dark:bg-zinc-950/20 text-gray-900 dark:text-gray-100">
+            <CalibrationLab
+              sensors={sensors}
+              onRefresh={fetchData}
+              user={dbUser}
+              token={token}
+              onTriggerWarrantyClaim={(claim) => {
+                setIncomingWarrantyClaim(claim);
+                setActiveView('warranty');
+              }}
+            />
+          </div>
+        ) : activeView === 'installation-planning' ? (
+          <div className="flex-1 overflow-y-auto p-6 bg-zinc-50 dark:bg-zinc-950/20 text-gray-900 dark:text-gray-100">
+            <InstallationPlanner
+              sensors={sensors}
+              stations={stations}
+              isAuthenticated={!!token}
+              onRefresh={fetchData}
+              token={token}
+            />
+          </div>
+        ) : activeView === 'capital-budgeting' ? (
+          <div className="flex-1 overflow-y-auto p-6 bg-zinc-50 dark:bg-zinc-950/20 text-gray-900 dark:text-gray-100">
+            <CapitalBudgeting
+              sensors={sensors}
+              stations={stations}
+              isAuthenticated={!!token}
+              onRefresh={fetchData}
+              token={token}
             />
           </div>
         ) : (
@@ -860,115 +982,142 @@ export default function App() {
       />
 
       {/* QUICK VIEW STATION MODAL */}
-      {quickViewStation && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="bg-[#0c0c0e] border border-[#1f1f23] rounded-lg w-full max-w-md overflow-hidden shadow-2xl">
-            <div className="p-6 border-b border-[#1f1f23] flex items-center justify-between bg-[#131316]">
-              <div className="flex items-center space-x-3">
-                <div className="p-2 bg-blue-950/40 border border-blue-900/30 text-blue-400 rounded">
-                  <MapPin className="h-5 w-5" />
-                </div>
-                <div>
-                  <h3 className="font-serif italic text-white text-lg font-bold">Terminal Quick View</h3>
-                  <p className="text-[10px] text-zinc-500 font-mono mt-0.5">ID: {quickViewStation.stationId}</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setQuickViewStation(null)}
-                className="p-1 hover:bg-zinc-800 text-zinc-500 hover:text-white rounded transition cursor-pointer"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            
-            <div className="p-6 space-y-4">
-              <div className="space-y-1">
-                <label className="text-[9px] font-mono font-bold text-zinc-500 uppercase tracking-widest block">Station Name</label>
-                <p className="text-sm text-zinc-100 font-semibold">{quickViewStation.stationName}</p>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[9px] font-mono font-bold text-zinc-500 uppercase tracking-widest block">Region / Office</label>
-                <p className="text-sm text-zinc-100">{quickViewStation.region}</p>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-[9px] font-mono font-bold text-zinc-500 uppercase tracking-widest block">Latitude</label>
-                  <p className="text-xs text-zinc-300 font-mono">{quickViewStation.latitude}° N</p>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[9px] font-mono font-bold text-zinc-500 uppercase tracking-widest block">Longitude</label>
-                  <p className="text-xs text-zinc-300 font-mono">{quickViewStation.longitude}° E</p>
-                </div>
-              </div>
-
-              {(() => {
-                const activeSensorsCount = sensors.filter(
-                  se => se.stationId === quickViewStation.stationId && se.status === 'Active'
-                ).length;
-                return (
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-mono font-bold text-zinc-500 uppercase tracking-widest block">Active Instruments</label>
-                    <div className="flex items-center">
-                      <span className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                        <span>{activeSensorsCount} Active {activeSensorsCount === 1 ? 'Sensor' : 'Sensors'} Linked</span>
-                      </span>
-                    </div>
+      <AnimatePresence>
+        {quickViewStation && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs"
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              transition={{ duration: 0.25, ease: 'easeOut' }}
+              className="bg-[#0c0c0e] border border-[#1f1f23] rounded-lg w-full max-w-md overflow-hidden shadow-2xl"
+            >
+              <div className="p-6 border-b border-[#1f1f23] flex items-center justify-between bg-[#131316]">
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 bg-blue-950/40 border border-blue-900/30 text-blue-400 rounded">
+                    <MapPin className="h-5 w-5" />
                   </div>
-                );
-              })()}
-
-              <div className="pt-2 border-t border-[#1f1f23] flex flex-col space-y-2">
+                  <div>
+                    <h3 className="font-serif italic text-white text-lg font-bold">Terminal Quick View</h3>
+                    <p className="text-[10px] text-zinc-500 font-mono mt-0.5">ID: {quickViewStation.stationId}</p>
+                  </div>
+                </div>
                 <button
-                  onClick={() => {
-                    setGisFocusStationId(quickViewStation.stationId);
-                    setActiveView('gis');
-                    setQuickViewStation(null);
-                  }}
-                  className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-semibold transition flex items-center justify-center space-x-1.5 cursor-pointer"
+                  onClick={() => setQuickViewStation(null)}
+                  className="p-1 hover:bg-zinc-800 text-zinc-500 hover:text-white rounded transition cursor-pointer"
                 >
-                  <MapPin className="h-3.5 w-3.5" />
-                  <span>Locate & Center on GIS Map</span>
+                  <X className="h-4 w-4" />
                 </button>
+              </div>
+              
+              <div className="p-6 space-y-4">
+                <div className="space-y-1">
+                  <label className="text-[9px] font-mono font-bold text-zinc-500 uppercase tracking-widest block">Station Name</label>
+                  <p className="text-sm text-zinc-100 font-semibold">{quickViewStation.stationName}</p>
+                </div>
 
-                <button
-                  onClick={() => {
-                    setGSearchQuery(quickViewStation.stationName);
-                    setInvActiveTab('stations');
-                    setActiveView('inventory');
-                    setQuickViewStation(null);
-                  }}
-                  className="w-full py-2 bg-zinc-900 hover:bg-zinc-850 text-zinc-100 border border-zinc-800 rounded text-xs font-semibold transition flex items-center justify-center space-x-1.5 cursor-pointer"
-                >
-                  <Layers className="h-3.5 w-3.5" />
-                  <span>Inspect in Inventory List</span>
-                </button>
+                <div className="space-y-1">
+                  <label className="text-[9px] font-mono font-bold text-zinc-500 uppercase tracking-widest block">Region / Office</label>
+                  <p className="text-sm text-zinc-100">{quickViewStation.region}</p>
+                </div>
 
-                {token && ['Super Administrator', 'Head Office Admin/User', 'Regional Office Admin/User'].includes(dbUser?.role || '') && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-mono font-bold text-zinc-500 uppercase tracking-widest block">Latitude</label>
+                    <p className="text-xs text-zinc-300 font-mono">{quickViewStation.latitude}° N</p>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-mono font-bold text-zinc-500 uppercase tracking-widest block">Longitude</label>
+                    <p className="text-xs text-zinc-300 font-mono">{quickViewStation.longitude}° E</p>
+                  </div>
+                </div>
+
+                {(() => {
+                  const activeSensorsCount = sensors.filter(
+                    se => se.stationId === quickViewStation.stationId && se.status === 'Active'
+                  ).length;
+                  return (
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-mono font-bold text-zinc-500 uppercase tracking-widest block">Active Instruments</label>
+                      <div className="flex items-center">
+                        <span className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                          <span>{activeSensorsCount} Active {activeSensorsCount === 1 ? 'Sensor' : 'Sensors'} Linked</span>
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                <div className="pt-2 border-t border-[#1f1f23] flex flex-col space-y-2">
                   <button
                     onClick={() => {
-                      setEditingStation(quickViewStation);
-                      setModalType('edit-station');
+                      setGisFocusStationId(quickViewStation.stationId);
+                      setActiveView('gis');
                       setQuickViewStation(null);
                     }}
-                    className="w-full py-2 bg-[#1b1b21] hover:bg-[#25252e] text-zinc-300 border border-[#2d2d38] rounded text-xs font-semibold transition flex items-center justify-center space-x-1.5 cursor-pointer"
+                    className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-semibold transition flex items-center justify-center space-x-1.5 cursor-pointer"
                   >
-                    <Settings className="h-3.5 w-3.5" />
-                    <span>Edit Terminal Details</span>
+                    <MapPin className="h-3.5 w-3.5" />
+                    <span>Locate & Center on GIS Map</span>
                   </button>
-                )}
+
+                  <button
+                    onClick={() => {
+                      setGSearchQuery(quickViewStation.stationName);
+                      setInvActiveTab('stations');
+                      setActiveView('inventory');
+                      setQuickViewStation(null);
+                    }}
+                    className="w-full py-2 bg-zinc-900 hover:bg-zinc-850 text-zinc-100 border border-zinc-800 rounded text-xs font-semibold transition flex items-center justify-center space-x-1.5 cursor-pointer"
+                  >
+                    <Layers className="h-3.5 w-3.5" />
+                    <span>Inspect in Inventory List</span>
+                  </button>
+
+                  {token && ['Super Administrator', 'Head Office Admin/User', 'Regional Office Admin/User'].includes(dbUser?.role || '') && (
+                    <button
+                      onClick={() => {
+                        setEditingStation(quickViewStation);
+                        setModalType('edit-station');
+                        setQuickViewStation(null);
+                      }}
+                      className="w-full py-2 bg-[#1b1b21] hover:bg-[#25252e] text-zinc-300 border border-[#2d2d38] rounded text-xs font-semibold transition flex items-center justify-center space-x-1.5 cursor-pointer"
+                    >
+                      <Settings className="h-3.5 w-3.5" />
+                      <span>Edit Terminal Details</span>
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-          </div>
-        </div>
-      )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* QUICK VIEW SENSOR MODAL */}
-      {quickViewSensor && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="bg-[#0c0c0e] border border-[#1f1f23] rounded-lg w-full max-w-md overflow-hidden shadow-2xl">
+      <AnimatePresence>
+        {quickViewSensor && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs"
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              transition={{ duration: 0.25, ease: 'easeOut' }}
+              className="bg-[#0c0c0e] border border-[#1f1f23] rounded-lg w-full max-w-md overflow-hidden shadow-2xl"
+            >
             <div className="p-6 border-b border-[#1f1f23] flex items-center justify-between bg-[#131316]">
               <div className="flex items-center space-x-3">
                 <div className="p-2 bg-emerald-950/40 border border-emerald-900/30 text-emerald-400 rounded">
@@ -1139,6 +1288,55 @@ export default function App() {
                 )}
               </div>
 
+              {/* Quick Note Section */}
+              <div className="pt-3 border-t border-[#1f1f23] space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-[9px] font-mono font-bold text-zinc-500 uppercase tracking-widest block">
+                    Diagnostic Quick Note
+                  </label>
+                  {quickNoteSuccess && (
+                    <span className="text-[10px] text-emerald-400 font-medium flex items-center gap-1 animate-in fade-in duration-300">
+                      <Check className="h-3 w-3" />
+                      <span>Saved successfully</span>
+                    </span>
+                  )}
+                  {quickNoteError && (
+                    <span className="text-[10px] text-rose-400 font-medium truncate max-w-[200px]">
+                      {quickNoteError}
+                    </span>
+                  )}
+                </div>
+
+                <textarea
+                  value={quickNoteValue}
+                  onChange={(e) => {
+                    setQuickNoteValue(e.target.value);
+                    if (quickNoteSuccess) setQuickNoteSuccess(false);
+                    if (quickNoteError) setQuickNoteError(null);
+                  }}
+                  disabled={savingQuickNote || !token || dbUser?.role === 'Read-only/Audit User'}
+                  placeholder={
+                    !token || dbUser?.role === 'Read-only/Audit User'
+                      ? "Read-only access: Cannot add or modify diagnostic notes."
+                      : "Type diagnostic comments, recent anomalies, or pending inspections..."
+                  }
+                  className="w-full h-20 px-3 py-2 bg-[#070709] rounded-lg border border-zinc-850 focus:outline-none focus:border-emerald-500 text-xs text-white placeholder-zinc-600 disabled:opacity-60 resize-none transition"
+                />
+
+                {token && dbUser?.role !== 'Read-only/Audit User' && (
+                  <div className="flex justify-end">
+                    <button
+                      onClick={handleSaveQuickNote}
+                      disabled={savingQuickNote}
+                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded text-[11px] font-semibold transition flex items-center space-x-1 cursor-pointer"
+                    >
+                      <Save className="h-3 w-3" />
+                      <span>{savingQuickNote ? 'Saving...' : 'Save Diagnostic Comment'}</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
               <div className="pt-2 border-t border-[#1f1f23] flex flex-col space-y-2">
                 <button
                   onClick={() => {
@@ -1182,9 +1380,10 @@ export default function App() {
                 )}
               </div>
             </div>
-          </div>
-        </div>
+          </motion.div>
+        </motion.div>
       )}
-    </div>
+    </AnimatePresence>
+  </div>
   );
 }

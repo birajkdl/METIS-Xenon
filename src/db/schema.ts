@@ -1,5 +1,5 @@
 import { relations } from 'drizzle-orm';
-import { integer, pgTable, serial, text, timestamp, doublePrecision } from 'drizzle-orm/pg-core';
+import { integer, pgTable, serial, text, timestamp, doublePrecision, boolean } from 'drizzle-orm/pg-core';
 
 // 1. Users Table (for Firebase Auth users)
 export const users = pgTable('users', {
@@ -15,6 +15,17 @@ export const users = pgTable('users', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
+// 1.5. Regional Offices Table
+export const regionalOffices = pgTable('regional_offices', {
+  id: serial('id').primaryKey(),
+  officeName: text('office_name').notNull().unique(),
+  address: text('address'),
+  phoneNumber: text('phone_number'),
+  emailId: text('email_id'),
+  website: text('website'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
 // 2. Weather Stations Table
 export const weatherStations = pgTable('weather_stations', {
   stationId: serial('station_id').primaryKey(),
@@ -25,6 +36,7 @@ export const weatherStations = pgTable('weather_stations', {
   batteryVoltageType: text('battery_voltage_type'),
   batteryCurrentVoltage: doublePrecision('battery_current_voltage'),
   stationType: text('station_type'),
+  regionalOfficeId: integer('regional_office_id').references(() => regionalOffices.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow(),
 });
 
@@ -35,6 +47,7 @@ export const sensorsInventory = pgTable('sensors_inventory', {
   manufacturer: text('manufacturer').notNull(),
   status: text('status').notNull(), // e.g. "Active", "In Calibration", "Maintenance", "Retired"
   stationId: integer('station_id').references(() => weatherStations.stationId, { onDelete: 'set null' }),
+  regionalOfficeId: integer('regional_office_id').references(() => regionalOffices.id, { onDelete: 'set null' }),
   approvalStatus: text('approval_status').default('Approved'), // 'Pending Approval', 'Approved', 'Rejected'
   statusLog: text('status_log'), // Store recent status change history
   dismissedAlert: text('dismissed_alert').default('false'), // 'true' or 'false'
@@ -54,8 +67,13 @@ export const sensorsInventory = pgTable('sensors_inventory', {
   responsiblePersonnel: text('responsible_personnel'),
   conditionStatus: text('condition_status'),
   remarks: text('remarks'),
+  quickNote: text('quick_note'),
+  assignedCalibrator: text('assigned_calibrator'), // Assigned calibrator/technician name when in calibration
+  calibrationDeviceUsed: text('calibration_device_used'), // Name or reference of standard equipment used
   photos: text('photos'), // Comma-separated or JSON list of photos/URLs
   documents: text('documents'), // Comma-separated or JSON list of documents/URLs
+  wmoSitingClass: text('wmo_siting_class'), // e.g., "Class 1", "Class 2", etc.
+  wmoChecklist: text('wmo_checklist'), // JSON string representing WMO siting classification checklist details
   createdAt: timestamp('created_at').defaultNow(),
 });
 
@@ -202,6 +220,9 @@ export const customRoles = pgTable('custom_roles', {
   id: serial('id').primaryKey(),
   roleName: text('role_name').notNull().unique(),
   description: text('description'),
+  readPermission: boolean('read_permission').default(true).notNull(),
+  writePermission: boolean('write_permission').default(false).notNull(),
+  editPermission: boolean('edit_permission').default(false).notNull(),
   createdAt: timestamp('created_at').defaultNow(),
 });
 
@@ -404,6 +425,105 @@ export const documents = pgTable('documents', {
   serialNumber: text('serial_number'),
   uploadedAt: timestamp('uploaded_at').defaultNow(),
 });
+
+
+// 20. Calibration Devices Table (Reference standard equipment used in the calibration lab)
+export const calibrationDevices = pgTable('calibration_devices', {
+  deviceId: serial('device_id').primaryKey(),
+  deviceName: text('device_name').notNull(), // e.g. "Reference Temperature Liquid Bath", "Wind Tunnel Reference Anemometer"
+  deviceType: text('device_type').notNull(), // e.g. "Thermometer Calibrator", "Barometer Calibrator", "Anemometer Calibrator"
+  serialNumber: text('serial_number').notNull(),
+  lastCalibrated: text('last_calibrated'), // YYYY-MM-DD
+  calibrationDue: text('calibration_due'), // YYYY-MM-DD
+  accuracyClass: text('accuracy_class'), // e.g. "Class A", "±0.01°C"
+  status: text('status').default('Active'), // 'Active', 'In Calibration', 'Maintenance', 'Retired'
+  assignedLab: text('assigned_lab').default('Central Meteorological Calibration Lab'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+
+// 21. ISO/IEC 17025 Compliant Calibration Jobs Table
+export const calibrationJobs = pgTable('calibration_jobs', {
+  jobId: serial('job_id').primaryKey(),
+  sensorId: integer('sensor_id')
+    .references(() => sensorsInventory.sensorId, { onDelete: 'cascade' })
+    .notNull(),
+  status: text('status').default('Pending'), // 'Pending', 'In Progress', 'Technical Review', 'Signed Off', 'Cancelled'
+  currentStage: text('current_stage').default('Plan'), // 'Plan', 'ReferenceSelection', 'EnvironmentCheck', 'Measurements', 'Uncertainty', 'Conformity', 'Review', 'SignOff'
+  
+  // 1. Plan Stage
+  plannedDate: text('planned_date'), // YYYY-MM-DD
+  plannedCalibrator: text('planned_calibrator'),
+  calibrationProcedure: text('calibration_procedure'), // Standard SOP followed
+  
+  // 2. Reference Standard Selection Stage
+  deviceId: integer('device_id')
+    .references(() => calibrationDevices.deviceId, { onDelete: 'set null' }),
+  
+  // 3. Environment Check Stage
+  ambientTemperature: doublePrecision('ambient_temperature'), // °C
+  ambientHumidity: doublePrecision('ambient_humidity'), // % RH
+  ambientPressure: doublePrecision('ambient_pressure'), // hPa
+  environmentStatus: text('environment_status'), // 'Within Limits', 'Outside Limits'
+  environmentCheckedBy: text('environment_checked_by'),
+  environmentCheckedAt: text('environment_checked_at'), // YYYY-MM-DD HH:MM:SS
+  
+  // 4. Measurements Stage
+  measurements: text('measurements'), // JSON array string of reading points: [{ refValue, sensorValue, error }]
+  measuredBy: text('measured_by'),
+  measuredAt: text('measured_at'),
+  
+  // 5. Uncertainty Stage
+  uncertaintyBudget: text('uncertainty_budget'), // JSON string: { repeatability, referenceUncertainty, resolutionError, combinedUncertainty, expandedUncertainty, coverageFactor }
+  uncertaintyCalculatedBy: text('uncertainty_calculated_by'),
+  uncertaintyCalculatedAt: text('uncertainty_calculated_at'),
+  
+  // 6. Conformity Stage (Pass/Fail)
+  conformityResult: text('conformity_result'), // 'Passed', 'Failed', 'Adjusted'
+  conformityDecisionRule: text('conformity_decision_rule'), // Decision rule applied (WMO / ILAC-G8 guidelines)
+  conformityNotes: text('conformity_notes'),
+  conformityEvaluatedBy: text('conformity_evaluated_by'),
+  conformityEvaluatedAt: text('conformity_evaluated_at'),
+  
+  // 7. Technical Review Stage
+  reviewerName: text('reviewer_name'),
+  reviewComments: text('review_comments'),
+  reviewedAt: text('reviewed_at'), // YYYY-MM-DD HH:MM:SS
+  
+  // 8. Authorized-Signatory Sign-off Stage
+  signatoryName: text('signatory_name'),
+  signatoryDesignation: text('signatory_designation'),
+  signedAt: text('signed_at'), // YYYY-MM-DD HH:MM:SS
+  eSignatureHash: text('e_signature_hash'), // Tamper-proof digital hash (e.g., SHA256 of measurements + signatory name + timestamp)
+  
+  // Audit Trail & Logs
+  fullAuditTrail: text('full_audit_trail'), // JSON array of tamper-proof chronological event logs
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+// 22. Installation Projects (Sandbox & Bundling) Table
+export const installationProjects = pgTable('installation_projects', {
+  id: serial('id').primaryKey(),
+  projectName: text('project_name').notNull(),
+  targetStationId: integer('target_station_id').references(() => weatherStations.stationId, { onDelete: 'set null' }),
+  status: text('status').notNull().default('Draft'), // 'Draft', 'Approved', 'Packed', 'Deployed'
+  dataLoggerModel: text('data_logger_model'),
+  solarPanelModel: text('solar_panel_model'),
+  enclosureModel: text('enclosure_model'),
+  sensorIds: text('sensor_ids'), // Comma-separated list of sensor IDs bundled, e.g. "1,4,12"
+  compatibilityStatus: text('compatibility_status').default('Unknown'), // 'Valid', 'Warnings', 'Invalid'
+  compatibilityReport: text('compatibility_report'), // JSON text of compatibility check results
+  scheduledDate: text('scheduled_date'), // YYYY-MM-DD
+  notes: text('notes'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const installationProjectsRelations = relations(installationProjects, ({ one }) => ({
+  station: one(weatherStations, {
+    fields: [installationProjects.targetStationId],
+    references: [weatherStations.stationId],
+  }),
+}));
 
 
 

@@ -14,7 +14,8 @@ import {
   ExternalLink,
   ChevronRight,
   Sparkles,
-  QrCode
+  QrCode,
+  ClipboardCheck
 } from 'lucide-react';
 import { Sensor, WeatherStation } from '../types.ts';
 import SensorLabelModal from './SensorLabelModal.tsx';
@@ -34,6 +35,7 @@ interface InventoryListProps {
   setGlobalSearchQuery?: (q: string) => void;
   activeTabProp?: 'sensors' | 'stations';
   setActiveTabProp?: (tab: 'sensors' | 'stations') => void;
+  onOpenSensorRegistration?: () => void;
 }
 
 export default function InventoryList({
@@ -50,7 +52,8 @@ export default function InventoryList({
   globalSearchQuery,
   setGlobalSearchQuery,
   activeTabProp,
-  setActiveTabProp
+  setActiveTabProp,
+  onOpenSensorRegistration
 }: InventoryListProps) {
   const [localActiveTab, setLocalActiveTab] = useState<'sensors' | 'stations'>('sensors');
   const activeTab = activeTabProp !== undefined ? activeTabProp : localActiveTab;
@@ -177,13 +180,25 @@ export default function InventoryList({
                 <Plus className="h-3.5 w-3.5" />
                 <span>Add Weather Station</span>
               </button>
+
+              {/* Primary Sensor Registration Action */}
+              <button
+                id="sensor-registration-btn"
+                onClick={onOpenSensorRegistration}
+                className="flex items-center space-x-1.5 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md text-xs font-bold tracking-wide transition shadow-lg shadow-indigo-600/20 border border-indigo-500/20 cursor-pointer"
+                title="Open the advanced Sensor Registration module"
+              >
+                <ClipboardCheck className="h-3.5 w-3.5" />
+                <span>Sensor Registration</span>
+              </button>
+
               <button
                 id="add-sensor-catalog-btn"
                 onClick={onOpenAddSensor}
-                className="flex items-center space-x-1.5 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-md text-xs font-semibold tracking-wide transition shadow-lg shadow-blue-600/20 border border-blue-500/20 cursor-pointer"
+                className="flex items-center space-x-1.5 px-4 py-2.5 bg-[#131316] hover:bg-[#1f1f23] text-zinc-300 border border-[#1f1f23] rounded-md text-xs font-semibold tracking-wide transition cursor-pointer"
               >
                 <Plus className="h-3.5 w-3.5" />
-                <span>Catalog New Sensor</span>
+                <span>Quick Add Sensor</span>
               </button>
             </>
           )}
@@ -331,6 +346,15 @@ export default function InventoryList({
                 <Cpu className="h-10 w-10 text-zinc-600 mx-auto mb-2" />
                 <p className="font-serif italic text-sm text-white">No sensors matched your filters.</p>
                 <p className="text-xs text-zinc-500 mt-2">Try relaxing search parameters or registering a new sensor asset.</p>
+                {isAuthenticated && onOpenSensorRegistration && (
+                  <button
+                    onClick={onOpenSensorRegistration}
+                    className="mt-4 inline-flex items-center space-x-1.5 px-4 py-2 bg-indigo-600/15 hover:bg-indigo-600/25 text-indigo-400 border border-indigo-500/20 rounded-md text-xs font-semibold tracking-wide transition cursor-pointer"
+                  >
+                    <ClipboardCheck className="h-3.5 w-3.5" />
+                    <span>Go to Sensor Registration</span>
+                  </button>
+                )}
               </div>
             ) : (
               <table className="w-full text-left border-collapse">

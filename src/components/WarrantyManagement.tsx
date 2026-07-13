@@ -28,6 +28,8 @@ interface WarrantyManagementProps {
   isAuthenticated: boolean;
   onRefresh: () => Promise<void>;
   token: string | null;
+  prefilledWarrantyClaim?: any | null;
+  onClearPrefilledClaim?: () => void;
 }
 
 export default function WarrantyManagement({
@@ -35,10 +37,16 @@ export default function WarrantyManagement({
   stations,
   isAuthenticated,
   onRefresh,
-  token
+  token,
+  prefilledWarrantyClaim,
+  onClearPrefilledClaim
 }: WarrantyManagementProps) {
   // State variables
   const [searchTerm, setSearchTerm] = useState('');
+  const [claimNotes, setClaimNotes] = useState('');
+  const [claimSubmitted, setClaimSubmitted] = useState(false);
+  const [submittingClaim, setSubmittingClaim] = useState(false);
+  const [claimStatusError, setClaimStatusError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<'all' | 'valid' | 'expiring' | 'expired' | 'none'>('all');
   const [selectedSensor, setSelectedSensor] = useState<Sensor | null>(null);
   
@@ -290,6 +298,180 @@ export default function WarrantyManagement({
           </p>
         </div>
       </div>
+
+      {/* Prefilled Claim Wizard Section */}
+      {prefilledWarrantyClaim && (
+        <div className="bg-[#161214] border border-rose-500/20 rounded-lg p-6 space-y-6">
+          <div className="flex items-start justify-between border-b border-rose-500/10 pb-4">
+            <div className="flex items-center space-x-2.5">
+              <ShieldAlert className="h-6 w-6 text-rose-500 animate-pulse" />
+              <div>
+                <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+                  Automated Warranty Claim Triggered
+                </h3>
+                <p className="text-[10px] text-zinc-400 font-mono mt-0.5">
+                  Pre-filled claim template loaded from Calibration Lab failure. Supplier and Partner status updated to 'Under Review'.
+                </p>
+              </div>
+            </div>
+            <button 
+              onClick={onClearPrefilledClaim}
+              className="p-1 hover:bg-rose-500/10 rounded-md text-zinc-400 hover:text-white transition cursor-pointer"
+              title="Discard claim wizard"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          {!claimSubmitted ? (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Claim Letter Preview Box */}
+              <div className="lg:col-span-2 bg-[#090708] border border-rose-500/10 rounded-lg p-5 font-mono text-[11px] leading-relaxed text-zinc-300 relative select-text overflow-x-auto">
+                <div className="absolute top-4 right-4 text-[9px] px-2 py-0.5 bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded font-semibold uppercase tracking-wider">
+                  Official Draft Letter
+                </div>
+                
+                <p className="font-bold text-zinc-400 border-b border-zinc-800 pb-2 mb-4">WARRANTY SERVICE REQUEST DEMAND</p>
+                <p><span className="text-zinc-500">Ref ID:</span> {prefilledWarrantyClaim.claimId}</p>
+                <p><span className="text-zinc-500">Date:</span> {prefilledWarrantyClaim.todayDate}</p>
+                <br />
+                <p><span className="text-zinc-500">To:</span> {prefilledWarrantyClaim.supplierName}</p>
+                <p><span className="text-zinc-500">Attn:</span> {prefilledWarrantyClaim.contactName} ({prefilledWarrantyClaim.supplierEmail})</p>
+                <br />
+                <p>This is a formal warranty replacement demand regarding the following procured meteorological equipment:</p>
+                <ul className="list-disc pl-5 my-2.5 space-y-1 text-zinc-200">
+                  <li><strong>Equipment Type:</strong> {prefilledWarrantyClaim.sensorType}</li>
+                  <li><strong>Manufacturer:</strong> {prefilledWarrantyClaim.manufacturer}</li>
+                  <li><strong>Serial Number:</strong> {prefilledWarrantyClaim.serialNumber || 'N/A'}</li>
+                  <li><strong>Model Number:</strong> {prefilledWarrantyClaim.modelNumber || 'N/A'}</li>
+                  <li><strong>Procurement Date:</strong> {prefilledWarrantyClaim.procurementDate || 'N/A'}</li>
+                  <li><strong>Invoice Ref:</strong> {prefilledWarrantyClaim.invoiceReference || 'N/A'}</li>
+                </ul>
+                
+                <p className="mt-3">
+                  <strong>Technical Non-Conformance Statement:</strong><br />
+                  During ISO/IEC 17025 conformity verification tests in our centralized Meteorological Calibration Lab (Calibration Job ID: #{prefilledWarrantyClaim.calibrationJobId}), this sensor failed crucial accuracy checks.
+                </p>
+                <p className="mt-2 text-rose-400/90 font-semibold bg-rose-500/5 p-2.5 rounded border border-rose-500/10">
+                  <em>" {prefilledWarrantyClaim.failureNotes} "</em>
+                </p>
+                
+                <p className="mt-4 text-zinc-400">
+                  As this sensor is fully covered under the manufacturer's warranty window (Coverage: {prefilledWarrantyClaim.warrantyStartDate} to {prefilledWarrantyClaim.warrantyEndDate}), we hereby request an immediate RMA authorization, a physical factory replacement, or a certified repair.
+                </p>
+                
+                <div className="mt-6 border-t border-zinc-800 pt-4 text-zinc-500 text-[10px]">
+                  Generated automatically by METIS Centralized Warranty Linkage Protocol.
+                </div>
+              </div>
+
+              {/* Action Sidebar */}
+              <div className="space-y-4">
+                <div className="bg-[#1d1619] border border-rose-500/10 rounded-lg p-4 space-y-3.5">
+                  <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                    Claim Dispatch Control
+                  </h4>
+                  <p className="text-[10px] text-zinc-400 leading-normal">
+                    Filing this claim will log the action, append the receipt to the sensor's status history log, register the audit trace, and set the sensor status to 'Under Repair'.
+                  </p>
+                  
+                  <div className="space-y-1.5">
+                    <label className="block text-[10px] font-mono text-zinc-400 uppercase tracking-wider">Additional Service Notes</label>
+                    <textarea 
+                      className="w-full bg-black border border-[#1f1f23] rounded-md p-2.5 text-xs text-white focus:outline-none focus:border-rose-500"
+                      rows={3}
+                      placeholder="Add any additional service tracking comments or logistics details..."
+                      value={claimNotes}
+                      onChange={(e) => setClaimNotes(e.target.value)}
+                    />
+                  </div>
+
+                  {claimStatusError && (
+                    <p className="text-[10px] text-rose-400 font-semibold">{claimStatusError}</p>
+                  )}
+
+                  <div className="flex gap-2 pt-2">
+                    <button
+                      onClick={async () => {
+                        setSubmittingClaim(true);
+                        setClaimStatusError(null);
+                        try {
+                          const res = await fetch('/api/warranty/submit-claim', {
+                            method: 'POST',
+                            headers: {
+                              'Content-Type': 'application/json',
+                              'Authorization': `Bearer ${token || localStorage.getItem('token') || ''}`
+                            },
+                            body: JSON.stringify({
+                              claimId: prefilledWarrantyClaim.claimId,
+                              sensorId: prefilledWarrantyClaim.sensorId,
+                              supplierName: prefilledWarrantyClaim.supplierName,
+                              notes: claimNotes || `Filed under Calibration Job #${prefilledWarrantyClaim.calibrationJobId}.`
+                            })
+                          });
+
+                          if (!res.ok) {
+                            const err = await res.json();
+                            throw new Error(err.error || 'Failed to file claim.');
+                          }
+
+                          setClaimSubmitted(true);
+                          await onRefresh();
+                        } catch (err: any) {
+                          console.error(err);
+                          setClaimStatusError(err.message || 'Failed to dispatch claim.');
+                        } finally {
+                          setSubmittingClaim(false);
+                        }
+                      }}
+                      disabled={submittingClaim}
+                      className="flex-1 py-2 px-3 bg-rose-600 hover:bg-rose-700 text-white rounded font-bold text-xs transition cursor-pointer disabled:opacity-50 flex items-center justify-center space-x-1"
+                    >
+                      <span>{submittingClaim ? 'Dispatching...' : 'Dispatch Claim & Mark Repair'}</span>
+                    </button>
+                    <button
+                      onClick={onClearPrefilledClaim}
+                      className="px-3 py-2 border border-zinc-800 hover:bg-zinc-800 rounded font-semibold text-xs text-zinc-400 hover:text-white transition cursor-pointer"
+                    >
+                      Discard
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-4 bg-zinc-900/40 rounded-lg border border-zinc-800 text-[10px] space-y-1.5 leading-normal">
+                  <p className="font-bold text-zinc-300">🔗 Linked Supplier Action:</p>
+                  <p className="text-zinc-400">
+                    The vendor <strong>{prefilledWarrantyClaim.supplierName}</strong> has been flagged in <em>Suppliers & Partners</em> database to <strong>Under Review</strong> status.
+                  </p>
+                  <p className="text-zinc-400">
+                    A scorecard evaluation with a quality rating of <strong>1.0 (Critical Failure)</strong> has been logged automatically, lowering their overall average performance scores.
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="p-6 bg-emerald-500/5 border border-emerald-500/20 rounded-lg flex flex-col items-center text-center space-y-3">
+              <CheckCircle className="h-10 w-10 text-emerald-400 animate-bounce" />
+              <div className="space-y-1">
+                <h4 className="text-sm font-bold text-white uppercase tracking-wider">Claim Filed Successfully!</h4>
+                <p className="text-xs text-zinc-400 max-w-md leading-relaxed">
+                  Warranty claim <strong>{prefilledWarrantyClaim.claimId}</strong> was logged into the database. The sensor's official physical location/lifecycle logs have been appended, status is set to <strong>Under Repair</strong>, and the respective vendor has been flagged.
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setClaimSubmitted(false);
+                  setClaimNotes('');
+                  if (onClearPrefilledClaim) onClearPrefilledClaim();
+                }}
+                className="mt-2 px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded text-xs transition cursor-pointer"
+              >
+                Close Claim Wizard
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Metrics Banner */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3.5">

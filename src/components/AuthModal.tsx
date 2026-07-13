@@ -601,6 +601,8 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
                     <option value="Regional Office Admin/User">Regional Office Admin/User</option>
                     <option value="Synoptic/Aero-synoptic office User">Synoptic/Aero-synoptic office User</option>
                     <option value="Station User (optional)">Station User (optional)</option>
+                    <option value="Technician">Technician</option>
+                    <option value="Authorized Signatory">Authorized Signatory</option>
                     <option value="Read-only/Audit User">Read-only/Audit User</option>
                     <option value="Supplier account">Supplier account</option>
                   </select>
