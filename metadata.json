@@ -1,6 +1,6 @@
 {
   "name": "METIS",
-  "description": "Nepal Meteorological Department - Meteorological Telemetry & Instrument Suite",
+  "description": "Nepal Meteorological Department - Meteorological Instrument Section",
   "requestFramePermissions": [
     "camera"
   ],
