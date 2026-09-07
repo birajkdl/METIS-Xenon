@@ -32,7 +32,16 @@ import {
   ListFilter,
   History,
   AlertTriangle,
-  ClipboardList
+  ClipboardList,
+  ArrowLeftRight,
+  Sliders,
+  Radio,
+  RadioTower,
+  MapPin,
+  Database,
+  Sparkles,
+  Calculator,
+  Zap
 } from 'lucide-react';
 import { Sensor, CalibrationDevice, CalibrationJob } from '../types.ts';
 
@@ -63,10 +72,12 @@ interface CalibrationLabProps {
 }
 
 export default function CalibrationLab({ sensors, onRefresh, user, token, onTriggerWarrantyClaim }: CalibrationLabProps) {
-  const [activeTab, setActiveTab] = useState<'workflows' | 'devices' | 'history'>('workflows');
+  const [activeTab, setActiveTab] = useState<'workflows' | 'insitu' | 'devices' | 'history'>('workflows');
   const [devices, setDevices] = useState<CalibrationDevice[]>([]);
   const [jobs, setJobs] = useState<CalibrationJob[]>([]);
   const [history, setHistory] = useState<any[]>([]);
+  const [inSituLogs, setInSituLogs] = useState<any[]>([]);
+  const [stationsList, setStationsList] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -79,6 +90,51 @@ export default function CalibrationLab({ sensors, onRefresh, user, token, onTrig
   const [showPlanModal, setShowPlanModal] = useState(false);
   const [showCertificateModal, setShowCertificateModal] = useState(false);
   const [selectedCertificate, setSelectedCertificate] = useState<CalibrationJob | null>(null);
+
+  // Additional Modals for Field (In-Situ) & Lab Workflows
+  const [showInSituModal, setShowInSituModal] = useState(false);
+  const [showSwapModal, setShowSwapModal] = useState(false);
+  const [showCoefficientsModal, setShowCoefficientsModal] = useState(false);
+
+  // Form states for In-Situ Field Verification
+  const [inSituStationId, setInSituStationId] = useState('');
+  const [inSituSensorId, setInSituSensorId] = useState('');
+  const [inSituRefDevice, setInSituRefDevice] = useState('');
+  const [inSituRefSerial, setInSituRefSerial] = useState('');
+  const [inSituAwsVal, setInSituAwsVal] = useState('');
+  const [inSituRefVal, setInSituRefVal] = useState('');
+  const [inSituTolerance, setInSituTolerance] = useState('0.20');
+  const [inSituAmbientTemp, setInSituAmbientTemp] = useState('24.5');
+  const [inSituAmbientHum, setInSituAmbientHum] = useState('60');
+  const [inSituNotes, setInSituNotes] = useState('');
+
+  // Form states for Sensor Swap Wizard
+  const [swapStationId, setSwapStationId] = useState('');
+  const [swapOldSensorId, setSwapOldSensorId] = useState('');
+  const [swapNewSensorId, setSwapNewSensorId] = useState('');
+  const [swapReason, setSwapReason] = useState('Scheduled bench recalibration cycle');
+  const [swapPersonnel, setSwapPersonnel] = useState('');
+  const [swapNotes, setSwapNotes] = useState('');
+  const [swapSlope, setSwapSlope] = useState('1.0000');
+  const [swapOffset, setSwapOffset] = useState('0.0000');
+
+  // Form states for Coefficients Adjustment
+  const [coefSensorId, setCoefSensorId] = useState('');
+  const [coefModelType, setCoefModelType] = useState<'Linear' | 'Polynomial'>('Linear');
+  const [coefSlope, setCoefSlope] = useState('1.0000');
+  const [coefOffset, setCoefOffset] = useState('0.0000');
+  const [coefPolyA, setCoefPolyA] = useState('0.0000');
+  const [coefPolyB, setCoefPolyB] = useState('1.0000');
+  const [coefPolyC, setCoefPolyC] = useState('0.0000');
+  const [coefNotes, setCoefNotes] = useState('');
+
+  // Regression Fit calculator points
+  const [fitPt1Raw, setFitPt1Raw] = useState('');
+  const [fitPt1Ref, setFitPt1Ref] = useState('');
+  const [fitPt2Raw, setFitPt2Raw] = useState('');
+  const [fitPt2Ref, setFitPt2Ref] = useState('');
+  const [fitPt3Raw, setFitPt3Raw] = useState('');
+  const [fitPt3Ref, setFitPt3Ref] = useState('');
 
   // Form states for Reference Devices
   const [deviceName, setDeviceName] = useState('');
@@ -179,11 +235,207 @@ export default function CalibrationLab({ sensors, onRefresh, user, token, onTrig
     }
   };
 
+  const fetchInSituLogs = async () => {
+    try {
+      const res = await fetch('/api/in-situ-verifications');
+      if (res.ok) {
+        const data = await res.json();
+        setInSituLogs(data);
+      }
+    } catch (err) {
+      console.error('Error fetching in-situ verifications:', err);
+    }
+  };
+
+  const fetchStations = async () => {
+    try {
+      const res = await fetch('/api/weather-stations');
+      if (res.ok) {
+        const data = await res.json();
+        setStationsList(data);
+      }
+    } catch (err) {
+      console.error('Error fetching weather stations:', err);
+    }
+  };
+
   useEffect(() => {
     fetchDevices();
     fetchJobs();
     fetchHistory();
+    fetchInSituLogs();
+    fetchStations();
   }, []);
+
+  const handleSaveInSitu = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inSituStationId || !inSituSensorId || inSituAwsVal === '' || inSituRefVal === '') {
+      alert('Please fill in target station, sensor, AWS reading, and reference reading.');
+      return;
+    }
+
+    try {
+      const station = stationsList.find(s => s.stationId === parseInt(inSituStationId));
+      const sensor = sensors.find(s => s.sensorId === parseInt(inSituSensorId));
+
+      const res = await fetch('/api/in-situ-verifications', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token || localStorage.getItem('token') || ''}`
+        },
+        body: JSON.stringify({
+          stationId: inSituStationId,
+          stationName: station?.stationName || 'Weather Station AWS',
+          sensorId: inSituSensorId,
+          sensorType: sensor?.sensorType || 'Sensor',
+          sensorSerialNumber: sensor?.serialNumber || 'N/A',
+          portableReferenceName: inSituRefDevice || 'Vaisala HM70 Handheld Standard',
+          portableReferenceSerial: inSituRefSerial || 'REF-FIELD-01',
+          awsReading: inSituAwsVal,
+          referenceReading: inSituRefVal,
+          unit: MET_TOLERANCES[sensor?.sensorType || 'Default']?.unit || 'units',
+          toleranceLimit: inSituTolerance,
+          ambientTemp: inSituAmbientTemp,
+          ambientHumidity: inSituAmbientHum,
+          technicianName: user?.displayName || user?.email || 'Field Metrologist',
+          notes: inSituNotes
+        })
+      });
+
+      if (res.ok) {
+        setShowInSituModal(false);
+        fetchInSituLogs();
+        onRefresh();
+        alert('In-situ field check logged successfully! Station operations remain uninterrupted.');
+      } else {
+        const err = await res.json();
+        alert(err.error || 'Failed to save in-situ field verification.');
+      }
+    } catch (err) {
+      console.error('Error logging in-situ check:', err);
+    }
+  };
+
+  const handleExecuteSwap = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!swapStationId || !swapOldSensorId || !swapNewSensorId) {
+      alert('Please select station, currently active sensor, and pre-calibrated spare sensor.');
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/sensors/swap', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token || localStorage.getItem('token') || ''}`
+        },
+        body: JSON.stringify({
+          stationId: swapStationId,
+          oldSensorId: swapOldSensorId,
+          newSpareSensorId: swapNewSensorId,
+          swapDate: new Date().toISOString().split('T')[0],
+          reason: swapReason,
+          personnelInvolved: swapPersonnel || user?.displayName || user?.email || 'Field Metrologist',
+          coefficients: {
+            modelType: 'Linear',
+            slope: parseFloat(swapSlope) || 1.0,
+            offset: parseFloat(swapOffset) || 0.0,
+            lastAdjustedDate: new Date().toISOString().split('T')[0],
+            adjustedBy: user?.email || 'Lab Technician'
+          },
+          notes: swapNotes
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setShowSwapModal(false);
+        fetchJobs();
+        onRefresh();
+        alert(`Sensor Swap Executed Successfully at ${data.stationName}!\nActive sensor SEN-${swapOldSensorId} moved to 'In Calibration' / Bench Check schedule.\nPre-calibrated spare SEN-${swapNewSensorId} deployed and active.`);
+      } else {
+        const err = await res.json();
+        alert(err.error || 'Failed to execute sensor swap.');
+      }
+    } catch (err) {
+      console.error('Error executing sensor swap:', err);
+    }
+  };
+
+  const handleSaveCoefficients = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!coefSensorId) {
+      alert('Please select a target sensor to update coefficients.');
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/sensors/${coefSensorId}/coefficients`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token || localStorage.getItem('token') || ''}`
+        },
+        body: JSON.stringify({
+          modelType: coefModelType,
+          slope: parseFloat(coefSlope) || 1.0,
+          offset: parseFloat(coefOffset) || 0.0,
+          polyA: parseFloat(coefPolyA) || 0.0,
+          polyB: parseFloat(coefPolyB) || 1.0,
+          polyC: parseFloat(coefPolyC) || 0.0,
+          notes: coefNotes
+        })
+      });
+
+      if (res.ok) {
+        setShowCoefficientsModal(false);
+        onRefresh();
+        alert('Calibration transfer function coefficients updated successfully!');
+      } else {
+        const err = await res.json();
+        alert(err.error || 'Failed to update coefficients.');
+      }
+    } catch (err) {
+      console.error('Error updating coefficients:', err);
+    }
+  };
+
+  const handleCalculateFit = () => {
+    const pts = [
+      { x: parseFloat(fitPt1Raw), y: parseFloat(fitPt1Ref) },
+      { x: parseFloat(fitPt2Raw), y: parseFloat(fitPt2Ref) },
+      { x: parseFloat(fitPt3Raw), y: parseFloat(fitPt3Ref) }
+    ].filter(p => !isNaN(p.x) && !isNaN(p.y));
+
+    if (pts.length < 2) {
+      alert('Please enter at least 2 test point pairs (Raw Sensor Value vs Reference Standard Value).');
+      return;
+    }
+
+    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+    const n = pts.length;
+    pts.forEach(p => {
+      sumX += p.x;
+      sumY += p.y;
+      sumXY += p.x * p.y;
+      sumX2 += p.x * p.x;
+    });
+
+    const denom = n * sumX2 - sumX * sumX;
+    if (Math.abs(denom) < 1e-12) {
+      alert('Invalid regression points: points have identical X values.');
+      return;
+    }
+
+    const m = (n * sumXY - sumX * sumY) / denom;
+    const c = (sumY - m * sumX) / n;
+
+    setCoefSlope(m.toFixed(4));
+    setCoefOffset(c.toFixed(4));
+    alert(`Linear Least-Squares Regression Fitted!\nCalculated Slope (m) = ${m.toFixed(4)}\nCalculated Offset (c) = ${c.toFixed(4)}`);
+  };
 
   const handleOpenDeviceModal = (device: CalibrationDevice | null = null) => {
     if (device) {
@@ -402,20 +654,58 @@ export default function CalibrationLab({ sensors, onRefresh, user, token, onTrig
 
   // ISO 17025 Workflows List Component
   const renderWorkflowsList = () => (
-    <div className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden">
-      <div className="p-4 border-b border-zinc-100 dark:border-zinc-800 flex justify-between items-center bg-zinc-50 dark:bg-zinc-900/50">
-        <div>
-          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">ISO/IEC 17025 Sequence Queue</h2>
-          <p className="text-xs text-zinc-500">Chronological multi-stage sequence files for meteorological physical instruments.</p>
+    <div className="space-y-4">
+      {/* Lab Workflow Scope & Features Banner */}
+      <div className="bg-gradient-to-r from-indigo-900/10 via-sky-900/10 to-indigo-900/10 border border-indigo-200 dark:border-indigo-800/40 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 bg-indigo-600/10 text-indigo-600 dark:text-indigo-400 rounded-lg">
+            <Wrench className="h-5 w-5" />
+          </div>
+          <div>
+            <h3 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+              Laboratory Bench Calibration Workflow
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
+                ISO/IEC 17025
+              </span>
+            </h3>
+            <p className="text-[11px] text-zinc-600 dark:text-zinc-400">
+              Supports bench check schedules, sensor swapping (active station sensor replaced with pre-calibrated spare), and transfer function coefficient tuning (slope & offset).
+            </p>
+          </div>
         </div>
-        <button
-          onClick={handleOpenPlanModal}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 transition"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Plan Calibration Job
-        </button>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => setShowSwapModal(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 text-xs font-semibold shadow-xs transition"
+          >
+            <ArrowLeftRight className="h-3.5 w-3.5" />
+            Sensor Swap Wizard
+          </button>
+          <button
+            onClick={() => setShowCoefficientsModal(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white px-3 py-1.5 text-xs font-semibold shadow-xs transition"
+          >
+            <Sliders className="h-3.5 w-3.5" />
+            Adjust Coefficients
+          </button>
+        </div>
       </div>
+
+      <div className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden">
+        <div className="p-4 border-b border-zinc-100 dark:border-zinc-800 flex justify-between items-center bg-zinc-50 dark:bg-zinc-900/50">
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">ISO/IEC 17025 Bench Calibration Queue</h2>
+            <p className="text-xs text-zinc-500">Chronological multi-stage sequence files for meteorological physical instruments.</p>
+          </div>
+          <button
+            onClick={handleOpenPlanModal}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 transition"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Plan Bench Check
+          </button>
+        </div>
       <div className="overflow-x-auto">
         <table className="w-full text-left border-collapse">
           <thead>
@@ -503,6 +793,129 @@ export default function CalibrationLab({ sensors, onRefresh, user, token, onTrig
             )}
           </tbody>
         </table>
+      </div>
+    </div>
+  </div>
+);
+
+  // Field (In-Situ) Verification View Component
+  const renderInSituView = () => (
+    <div className="space-y-4">
+      {/* Banner */}
+      <div className="bg-gradient-to-r from-emerald-900/10 via-teal-900/10 to-emerald-900/10 border border-emerald-200 dark:border-emerald-800/40 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 bg-emerald-600/10 text-emerald-600 dark:text-emerald-400 rounded-lg">
+            <RadioTower className="h-5 w-5" />
+          </div>
+          <div>
+            <h3 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+              Field (In-Situ) AWS Calibration & Verification
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                Online Station Comparison
+              </span>
+            </h3>
+            <p className="text-[11px] text-zinc-600 dark:text-zinc-400">
+              Compares operational AWS station telemetry directly against portable master reference meters without taking the station offline.
+            </p>
+          </div>
+        </div>
+
+        <button
+          onClick={() => {
+            if (stationsList.length > 0) {
+              setInSituStationId(String(stationsList[0].stationId));
+              const stSensors = sensors.filter(s => String(s.stationId) === String(stationsList[0].stationId));
+              if (stSensors.length > 0) setInSituSensorId(String(stSensors[0].sensorId));
+            }
+            setShowInSituModal(true);
+          }}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-1.5 text-xs font-semibold shadow-xs transition shrink-0"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Log Field Comparison
+        </button>
+      </div>
+
+      {/* Verification Logs Table */}
+      <div className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden">
+        <div className="p-4 border-b border-zinc-100 dark:border-zinc-800 flex justify-between items-center bg-zinc-50 dark:bg-zinc-900/50">
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">In-Situ Field Verification Logbook</h2>
+            <p className="text-xs text-zinc-500">Historical records of portable reference meter vs. AWS station sensor comparisons.</p>
+          </div>
+          <span className="text-xs font-medium text-zinc-500">
+            Total Checks: {inSituLogs.length}
+          </span>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-zinc-50/50 dark:bg-zinc-950/20 text-xs font-semibold text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-800">
+                <th className="p-4">Station / Location</th>
+                <th className="p-4">Sensor Under Test</th>
+                <th className="p-4">AWS Reading</th>
+                <th className="p-4">Portable Master Reading</th>
+                <th className="p-4">Measured Delta</th>
+                <th className="p-4">Tolerance Evaluation</th>
+                <th className="p-4">Inspector / Date</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-850 text-sm text-zinc-700 dark:text-zinc-300">
+              {inSituLogs.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="p-8 text-center text-zinc-400 dark:text-zinc-600">
+                    <RadioTower className="h-8 w-8 mx-auto text-zinc-300 mb-2" />
+                    No field (in-situ) verifications logged yet. Click "Log Field Comparison" to log your first field check.
+                  </td>
+                </tr>
+              ) : (
+                inSituLogs.map((log) => {
+                  const isPass = log.passFail === 'PASS';
+
+                  return (
+                    <tr key={log.verificationId} className="hover:bg-zinc-50/30 dark:hover:bg-zinc-950/10 transition">
+                      <td className="p-4">
+                        <div className="font-semibold text-zinc-900 dark:text-zinc-100">{log.stationName || `Station #${log.stationId}`}</div>
+                        <div className="text-[10px] text-zinc-500 font-mono">STN-{log.stationId}</div>
+                      </td>
+                      <td className="p-4">
+                        <div className="font-medium text-xs text-zinc-800 dark:text-zinc-200">{log.sensorName || log.sensorType || `Sensor #${log.sensorId}`}</div>
+                        <div className="text-[10px] text-zinc-500 font-mono">SEN-{log.sensorId}</div>
+                      </td>
+                      <td className="p-4 font-mono text-xs font-bold text-zinc-900 dark:text-zinc-100">
+                        {log.awsValue}
+                      </td>
+                      <td className="p-4 font-mono text-xs text-indigo-600 dark:text-indigo-400 font-semibold">
+                        {log.referenceValue}
+                        <div className="text-[9px] text-zinc-400 font-normal">S/N: {log.referenceMeterSn}</div>
+                      </td>
+                      <td className="p-4 font-mono text-xs">
+                        <span className={log.difference > 0 ? 'text-amber-600' : log.difference < 0 ? 'text-sky-600' : 'text-zinc-600'}>
+                          {log.difference > 0 ? `+${log.difference}` : log.difference}
+                        </span>
+                      </td>
+                      <td className="p-4">
+                        <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-bold ${
+                          isPass
+                            ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/40'
+                            : 'bg-rose-50 text-rose-700 dark:bg-rose-950/30 dark:text-rose-400 border border-rose-200 dark:border-rose-800/40'
+                        }`}>
+                          {isPass ? <CheckCircle2 className="h-3 w-3" /> : <AlertTriangle className="h-3 w-3" />}
+                          {log.passFail} (Tol: ±{log.toleranceAllowed})
+                        </span>
+                      </td>
+                      <td className="p-4 text-xs">
+                        <div className="font-medium text-zinc-800 dark:text-zinc-200">{log.inspectorName}</div>
+                        <div className="text-[10px] text-zinc-500">{new Date(log.verificationDate).toLocaleDateString()}</div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
@@ -1813,10 +2226,26 @@ export default function CalibrationLab({ sensors, onRefresh, user, token, onTrig
               }`}
             >
               <Activity className="h-4 w-4" />
-              17025 Workflows
+              Laboratory (Bench) Workflow
               {jobs.filter(j => j.status !== 'Signed Off').length > 0 && (
                 <span className="bg-indigo-100 text-indigo-800 text-[10px] font-bold px-1.5 py-0.5 rounded-full">
                   {jobs.filter(j => j.status !== 'Signed Off').length}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => { setActiveTab('insitu'); setSearchQuery(''); }}
+              className={`px-4 py-2.5 text-xs font-bold border-b-2 transition flex items-center gap-2 ${
+                activeTab === 'insitu' 
+                  ? 'border-emerald-600 text-emerald-600 dark:border-emerald-400 dark:text-emerald-400' 
+                  : 'border-transparent text-zinc-500 hover:text-zinc-700'
+              }`}
+            >
+              <RadioTower className="h-4 w-4 text-emerald-500" />
+              Field (In-Situ) Verification
+              {inSituLogs.length > 0 && (
+                <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+                  {inSituLogs.length}
                 </span>
               )}
             </button>
@@ -1856,6 +2285,8 @@ export default function CalibrationLab({ sensors, onRefresh, user, token, onTrig
           </div>
 
           {activeTab === 'workflows' && renderWorkflowsList()}
+
+          {activeTab === 'insitu' && renderInSituView()}
 
           {activeTab === 'devices' && (
             <div className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden">
@@ -2379,6 +2810,503 @@ export default function CalibrationLab({ sensors, onRefresh, user, token, onTrig
               </div>
 
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Log In-Situ Field Verification Check */}
+      {showInSituModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl max-w-xl w-full overflow-hidden border border-zinc-200 dark:border-zinc-800 animate-in fade-in zoom-in-95 duration-150">
+            <div className="bg-emerald-900/10 dark:bg-emerald-950/40 px-6 py-4 border-b border-emerald-100 dark:border-emerald-900/30 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <RadioTower className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
+                <div>
+                  <h2 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">Log In-Situ Field Verification Check</h2>
+                  <p className="text-[10px] text-emerald-700 dark:text-emerald-400">AWS Station stays online. Compare sensor output against portable reference meter.</p>
+                </div>
+              </div>
+              <button onClick={() => setShowInSituModal(false)} className="text-zinc-400 hover:text-zinc-600 text-xl font-bold">×</button>
+            </div>
+
+            <form onSubmit={handleSaveInSitu} className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Target Weather Station *</label>
+                  <select
+                    required
+                    value={inSituStationId}
+                    onChange={(e) => {
+                      setInSituStationId(e.target.value);
+                      const stSensors = sensors.filter(s => String(s.stationId) === e.target.value);
+                      if (stSensors.length > 0) setInSituSensorId(String(stSensors[0].sensorId));
+                    }}
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-850 px-3 py-2 text-xs focus:border-emerald-500 dark:bg-zinc-950 focus:outline-none"
+                  >
+                    <option value="">-- Select Active Station --</option>
+                    {stationsList.map(st => (
+                      <option key={st.stationId} value={st.stationId}>
+                        {st.stationName} ({st.wmoId || 'AWS'})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Deployed AWS Sensor *</label>
+                  <select
+                    required
+                    value={inSituSensorId}
+                    onChange={(e) => setInSituSensorId(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-850 px-3 py-2 text-xs focus:border-emerald-500 dark:bg-zinc-950 focus:outline-none"
+                  >
+                    <option value="">-- Select Sensor --</option>
+                    {sensors
+                      .filter(s => !inSituStationId || String(s.stationId) === inSituStationId)
+                      .map(s => (
+                        <option key={s.sensorId} value={s.sensorId}>
+                          [{s.sensorType}] S/N: {s.serialNumber || 'No S/N'}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Portable Traveling Standard *</label>
+                  <input
+                    type="text"
+                    required
+                    value={inSituRefDevice}
+                    onChange={(e) => setInSituRefDevice(e.target.value)}
+                    placeholder="e.g. Vaisala HM70 Handheld Standard"
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-850 px-3 py-2 text-xs focus:border-emerald-500 dark:bg-zinc-950 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Standard S/N Reference</label>
+                  <input
+                    type="text"
+                    value={inSituRefSerial}
+                    onChange={(e) => setInSituRefSerial(e.target.value)}
+                    placeholder="REF-HM70-9821"
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-850 px-3 py-2 text-xs focus:border-emerald-500 dark:bg-zinc-950 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3 bg-zinc-50 dark:bg-zinc-950 p-3 rounded-lg border border-zinc-200 dark:border-zinc-800">
+                <div>
+                  <label className="block text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 mb-1">AWS Live Telemetry Reading *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    required
+                    value={inSituAwsVal}
+                    onChange={(e) => setInSituAwsVal(e.target.value)}
+                    placeholder="e.g. 25.40"
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-800 px-2.5 py-1.5 text-xs font-mono font-bold focus:border-indigo-500 dark:bg-zinc-900 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 mb-1">Reference Standard Reading *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    required
+                    value={inSituRefVal}
+                    onChange={(e) => setInSituRefVal(e.target.value)}
+                    placeholder="e.g. 25.35"
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-800 px-2.5 py-1.5 text-xs font-mono font-bold focus:border-emerald-500 dark:bg-zinc-900 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-zinc-600 dark:text-zinc-400 mb-1">Max Permissible Tolerance</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={inSituTolerance}
+                    onChange={(e) => setInSituTolerance(e.target.value)}
+                    placeholder="±0.20"
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-800 px-2.5 py-1.5 text-xs font-mono focus:border-zinc-500 dark:bg-zinc-900 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {/* Calculated Delta Preview */}
+              {inSituAwsVal !== '' && inSituRefVal !== '' && (
+                <div className="p-3 rounded-lg bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30 flex items-center justify-between text-xs">
+                  <div>
+                    <span className="text-zinc-500 block text-[10px]">Calculated Error Delta (AWS - Reference):</span>
+                    <span className="font-mono font-bold text-sm text-indigo-700 dark:text-indigo-400">
+                      {(parseFloat(inSituAwsVal) - parseFloat(inSituRefVal)).toFixed(3)}
+                    </span>
+                  </div>
+                  <div>
+                    {Math.abs(parseFloat(inSituAwsVal) - parseFloat(inSituRefVal)) <= parseFloat(inSituTolerance || '0.2') ? (
+                      <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400 font-bold bg-emerald-100 dark:bg-emerald-950 px-2.5 py-1 rounded-full">
+                        <CheckCircle2 className="h-4 w-4" /> Within CIMO Tolerance
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-rose-700 dark:text-rose-400 font-bold bg-rose-100 dark:bg-rose-950 px-2.5 py-1 rounded-full">
+                        <AlertTriangle className="h-4 w-4" /> Exceeds Tolerance Limit
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Ambient Temp (°C)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={inSituAmbientTemp}
+                    onChange={(e) => setInSituAmbientTemp(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-850 px-3 py-2 text-xs focus:outline-none dark:bg-zinc-950"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Ambient Humidity (%)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={inSituAmbientHum}
+                    onChange={(e) => setInSituAmbientHum(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-850 px-3 py-2 text-xs focus:outline-none dark:bg-zinc-950"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Field Observations / Notes</label>
+                <textarea
+                  rows={2}
+                  value={inSituNotes}
+                  onChange={(e) => setInSituNotes(e.target.value)}
+                  placeholder="e.g. Visual sensor inspection normal. Zero physical biofouling or radiation shield blockage."
+                  className="w-full rounded-lg border border-zinc-200 dark:border-zinc-850 px-3 py-2 text-xs focus:border-emerald-500 dark:bg-zinc-950 focus:outline-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 border-t border-zinc-100 dark:border-zinc-800 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowInSituModal(false)}
+                  className="rounded-lg border border-zinc-200 px-4 py-2 text-xs font-semibold text-zinc-700 hover:bg-zinc-50 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700 transition flex items-center gap-1.5"
+                >
+                  <RadioTower className="h-4 w-4" /> Save Field Check Log
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Sensor Swap Wizard (Active Sensor <-> Pre-Calibrated Spare) */}
+      {showSwapModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl max-w-xl w-full overflow-hidden border border-zinc-200 dark:border-zinc-800 animate-in fade-in zoom-in-95 duration-150">
+            <div className="bg-emerald-950/20 dark:bg-emerald-950/40 px-6 py-4 border-b border-emerald-200 dark:border-emerald-800/40 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ArrowLeftRight className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
+                <div>
+                  <h2 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">Sensor Swap Wizard (Pre-Calibrated Spare)</h2>
+                  <p className="text-[10px] text-emerald-700 dark:text-emerald-400">Swap active station sensor with a pre-calibrated lab spare without missing observation windows.</p>
+                </div>
+              </div>
+              <button onClick={() => setShowSwapModal(false)} className="text-zinc-400 hover:text-zinc-600 text-xl font-bold">×</button>
+            </div>
+
+            <form onSubmit={handleExecuteSwap} className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Target Weather Station *</label>
+                <select
+                  required
+                  value={swapStationId}
+                  onChange={(e) => {
+                    setSwapStationId(e.target.value);
+                    const activeSensors = sensors.filter(s => String(s.stationId) === e.target.value);
+                    if (activeSensors.length > 0) setSwapOldSensorId(String(activeSensors[0].sensorId));
+                  }}
+                  className="w-full rounded-lg border border-zinc-200 dark:border-zinc-850 px-3 py-2 text-xs focus:border-emerald-500 dark:bg-zinc-950 focus:outline-none"
+                >
+                  <option value="">-- Choose Weather Station --</option>
+                  {stationsList.map(st => (
+                    <option key={st.stationId} value={st.stationId}>
+                      {st.stationName} ({st.wmoId || 'AWS'})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-rose-600 dark:text-rose-400 mb-1">Active Sensor to Remove (to Lab) *</label>
+                  <select
+                    required
+                    value={swapOldSensorId}
+                    onChange={(e) => setSwapOldSensorId(e.target.value)}
+                    className="w-full rounded-lg border border-rose-200 dark:border-rose-900/40 px-3 py-2 text-xs focus:border-rose-500 dark:bg-zinc-950 focus:outline-none"
+                  >
+                    <option value="">-- Active Deployed Sensor --</option>
+                    {sensors
+                      .filter(s => !swapStationId || String(s.stationId) === swapStationId)
+                      .map(s => (
+                        <option key={s.sensorId} value={s.sensorId}>
+                          [{s.sensorType}] S/N: {s.serialNumber || 'No S/N'}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-emerald-600 dark:text-emerald-400 mb-1">Pre-Calibrated Spare Sensor (Deploy) *</label>
+                  <select
+                    required
+                    value={swapNewSensorId}
+                    onChange={(e) => setSwapNewSensorId(e.target.value)}
+                    className="w-full rounded-lg border border-emerald-200 dark:border-emerald-900/40 px-3 py-2 text-xs focus:border-emerald-500 dark:bg-zinc-950 focus:outline-none"
+                  >
+                    <option value="">-- Select Lab Spare --</option>
+                    {sensors
+                      .filter(s => s.status === 'In Stock' || s.status === 'Calibrated' || String(s.sensorId) !== swapOldSensorId)
+                      .map(s => (
+                        <option key={s.sensorId} value={s.sensorId}>
+                          [{s.sensorType}] S/N: {s.serialNumber || 'No S/N'} ({s.status})
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Spare Sensor Slope (m)</label>
+                  <input
+                    type="number"
+                    step="0.0001"
+                    value={swapSlope}
+                    onChange={(e) => setSwapSlope(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-850 px-3 py-2 text-xs font-mono focus:outline-none dark:bg-zinc-950"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Spare Sensor Offset (c)</label>
+                  <input
+                    type="number"
+                    step="0.0001"
+                    value={swapOffset}
+                    onChange={(e) => setSwapOffset(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-850 px-3 py-2 text-xs font-mono focus:outline-none dark:bg-zinc-950"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Reason for Swap *</label>
+                <select
+                  value={swapReason}
+                  onChange={(e) => setSwapReason(e.target.value)}
+                  className="w-full rounded-lg border border-zinc-200 dark:border-zinc-850 px-3 py-2 text-xs focus:border-emerald-500 dark:bg-zinc-950 focus:outline-none"
+                >
+                  <option value="Scheduled bench recalibration cycle">Scheduled bench recalibration cycle</option>
+                  <option value="Field in-situ check drift threshold exceeded">Field in-situ check drift threshold exceeded</option>
+                  <option value="Physical sensor damage or lightning surge">Physical sensor damage or lightning surge</option>
+                  <option value="GBON mandatory compliance accuracy audit">GBON mandatory compliance accuracy audit</option>
+                </select>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 border-t border-zinc-100 dark:border-zinc-800 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowSwapModal(false)}
+                  className="rounded-lg border border-zinc-200 px-4 py-2 text-xs font-semibold text-zinc-700 hover:bg-zinc-50 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700 transition flex items-center gap-1.5"
+                >
+                  <ArrowLeftRight className="h-4 w-4" /> Execute Physical Sensor Swap
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Coefficient & Transfer Function Adjustments */}
+      {showCoefficientsModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl max-w-xl w-full overflow-hidden border border-zinc-200 dark:border-zinc-800 animate-in fade-in zoom-in-95 duration-150">
+            <div className="bg-sky-950/20 dark:bg-sky-950/40 px-6 py-4 border-b border-sky-200 dark:border-sky-800/40 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sliders className="h-5 w-5 text-sky-600 dark:text-sky-400" />
+                <div>
+                  <h2 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">Adjust Transfer Function Coefficients</h2>
+                  <p className="text-[10px] text-sky-700 dark:text-sky-400">Slope & offset mathematical linear / polynomial calibration adjustments.</p>
+                </div>
+              </div>
+              <button onClick={() => setShowCoefficientsModal(false)} className="text-zinc-400 hover:text-zinc-600 text-xl font-bold">×</button>
+            </div>
+
+            <form onSubmit={handleSaveCoefficients} className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Target Physical Sensor *</label>
+                <select
+                  required
+                  value={coefSensorId}
+                  onChange={(e) => {
+                    setCoefSensorId(e.target.value);
+                    const s = sensors.find(item => String(item.sensorId) === e.target.value);
+                    if (s && s.coefficients) {
+                      setCoefSlope(String(s.coefficients.slope ?? 1.0));
+                      setCoefOffset(String(s.coefficients.offset ?? 0.0));
+                    }
+                  }}
+                  className="w-full rounded-lg border border-zinc-200 dark:border-zinc-850 px-3 py-2 text-xs focus:border-sky-500 dark:bg-zinc-950 focus:outline-none"
+                >
+                  <option value="">-- Choose Sensor --</option>
+                  {sensors.map(s => (
+                    <option key={s.sensorId} value={s.sensorId}>
+                      [{s.sensorType}] S/N: {s.serialNumber || 'No S/N'} - {s.manufacturer} ({s.status})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Transfer Model</label>
+                  <select
+                    value={coefModelType}
+                    onChange={(e) => setCoefModelType(e.target.value as any)}
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-850 px-3 py-2 text-xs focus:border-sky-500 dark:bg-zinc-950 focus:outline-none"
+                  >
+                    <option value="Linear">Linear: y = m·x + c</option>
+                    <option value="Polynomial">2nd Order Poly: y = A + B·x + C·x²</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Slope (m / B)</label>
+                  <input
+                    type="number"
+                    step="0.0001"
+                    required
+                    value={coefSlope}
+                    onChange={(e) => setCoefSlope(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-850 px-3 py-2 text-xs font-mono font-bold focus:border-sky-500 dark:bg-zinc-950 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Offset (c / A)</label>
+                  <input
+                    type="number"
+                    step="0.0001"
+                    required
+                    value={coefOffset}
+                    onChange={(e) => setCoefOffset(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-850 px-3 py-2 text-xs font-mono font-bold focus:border-sky-500 dark:bg-zinc-950 focus:outline-none"
+                  />
+                </div>
+
+                {coefModelType === 'Polynomial' && (
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Poly C (x² term)</label>
+                    <input
+                      type="number"
+                      step="0.000001"
+                      value={coefPolyC}
+                      onChange={(e) => setCoefPolyC(e.target.value)}
+                      className="w-full rounded-lg border border-zinc-200 dark:border-zinc-850 px-3 py-2 text-xs font-mono focus:outline-none dark:bg-zinc-950"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Multi-point Least Squares Regression Fit Tool */}
+              <div className="bg-sky-50/50 dark:bg-sky-950/10 p-3.5 rounded-lg border border-sky-100 dark:border-sky-900/30 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-sky-800 dark:text-sky-400 flex items-center gap-1">
+                    <Calculator className="h-3.5 w-3.5" /> Least-Squares Regression Curve Fit Calculator
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleCalculateFit}
+                    className="text-[10px] font-bold bg-sky-600 hover:bg-sky-700 text-white px-2.5 py-1 rounded transition"
+                  >
+                    Calculate Slope & Offset
+                  </button>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-[10px]">
+                  <div>
+                    <span className="text-zinc-500 block mb-0.5">Test Pt 1 (Raw / Ref)</span>
+                    <div className="flex gap-1">
+                      <input placeholder="Raw" value={fitPt1Raw} onChange={(e) => setFitPt1Raw(e.target.value)} className="w-1/2 p-1 border rounded text-[10px] font-mono dark:bg-zinc-950" />
+                      <input placeholder="Ref" value={fitPt1Ref} onChange={(e) => setFitPt1Ref(e.target.value)} className="w-1/2 p-1 border rounded text-[10px] font-mono dark:bg-zinc-950" />
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block mb-0.5">Test Pt 2 (Raw / Ref)</span>
+                    <div className="flex gap-1">
+                      <input placeholder="Raw" value={fitPt2Raw} onChange={(e) => setFitPt2Raw(e.target.value)} className="w-1/2 p-1 border rounded text-[10px] font-mono dark:bg-zinc-950" />
+                      <input placeholder="Ref" value={fitPt2Ref} onChange={(e) => setFitPt2Ref(e.target.value)} className="w-1/2 p-1 border rounded text-[10px] font-mono dark:bg-zinc-950" />
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block mb-0.5">Test Pt 3 (Raw / Ref)</span>
+                    <div className="flex gap-1">
+                      <input placeholder="Raw" value={fitPt3Raw} onChange={(e) => setFitPt3Raw(e.target.value)} className="w-1/2 p-1 border rounded text-[10px] font-mono dark:bg-zinc-950" />
+                      <input placeholder="Ref" value={fitPt3Ref} onChange={(e) => setFitPt3Ref(e.target.value)} className="w-1/2 p-1 border rounded text-[10px] font-mono dark:bg-zinc-950" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Adjustment Reason / Calibration Certificate Ref</label>
+                <textarea
+                  rows={2}
+                  value={coefNotes}
+                  onChange={(e) => setCoefNotes(e.target.value)}
+                  placeholder="e.g. Adjusted after standard temperature bath bench calibration cycle."
+                  className="w-full rounded-lg border border-zinc-200 dark:border-zinc-850 px-3 py-2 text-xs focus:border-sky-500 dark:bg-zinc-950 focus:outline-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 border-t border-zinc-100 dark:border-zinc-800 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowCoefficientsModal(false)}
+                  className="rounded-lg border border-zinc-200 px-4 py-2 text-xs font-semibold text-zinc-700 hover:bg-zinc-50 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-lg bg-sky-600 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-700 transition flex items-center gap-1.5"
+                >
+                  <Sliders className="h-4 w-4" /> Save Coefficient Adjustments
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

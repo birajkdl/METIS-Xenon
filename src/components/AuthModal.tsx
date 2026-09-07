@@ -47,6 +47,12 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
+  let pendingTarget: any = null;
+  try {
+    const raw = sessionStorage.getItem('metis_pending_deeplink');
+    if (raw) pendingTarget = JSON.parse(raw);
+  } catch (e) {}
+
   if (!isOpen) return null;
 
   const resetForm = () => {
@@ -377,6 +383,17 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
               </p>
             </div>
           </div>
+
+          {/* Pending Deep Link Target Banner */}
+          {pendingTarget && (
+            <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-start space-x-2.5 text-xs">
+              <AlertCircle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+              <div className="text-amber-200/90 leading-snug">
+                <span className="font-bold text-amber-300 block mb-0.5">Authentication Required for Access</span>
+                You are accessing <span className="font-mono font-bold text-white uppercase">{pendingTarget.ticketNumber ? `Ticket #${pendingTarget.ticketNumber}` : pendingTarget.workOrderId ? `Work Order ${pendingTarget.workOrderId}` : 'Maintenance Task'}</span> via direct email link. Please sign in or register to be redirected straight to your assigned item.
+              </div>
+            </div>
+          )}
 
           {/* Tab buttons for Login / Register */}
           {mode !== 'forgot' && (

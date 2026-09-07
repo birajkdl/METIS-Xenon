@@ -19,13 +19,13 @@ interface ModalsProps {
   stations: WeatherStation[];
   sensors: Sensor[];
   selectedSensorForCalibId?: number | null;
-  onSubmitAddStation: (data: { stationName: string; region: string; latitude: number; longitude: number; batteryVoltageType?: string; batteryCurrentVoltage?: number; stationType?: string; regionalOfficeId?: number | null }) => Promise<void>;
+  onSubmitAddStation: (data: { stationName: string; region: string; latitude: number; longitude: number; batteryVoltageType?: string; batteryCurrentVoltage?: number; stationType?: string; regionalOfficeId?: number | null; simNumber?: string | null; wigosSeries?: string; wigosIssuer?: string; wigosIssueNum?: string; wigosLocalId?: string }) => Promise<void>;
   onSubmitAddSensor: (data: { sensorType: string; manufacturer: string; status: string; stationId: number | null }) => Promise<void>;
   onSubmitEditSensor: (sensorId: number, data: { sensorType: string; manufacturer: string; status: string; stationId: number | null }) => Promise<void>;
   onSubmitLogCalibration: (data: { sensorId: number; calibrationDate: string; technicianName: string; result: string; notes: string; nextDueDate: string }) => Promise<void>;
   editingSensor?: Sensor | null;
   editingStation?: WeatherStation | null;
-  onSubmitEditStation?: (stationId: number, data: { stationName: string; region: string; latitude: number; longitude: number; batteryVoltageType?: string; batteryCurrentVoltage?: number; stationType?: string; regionalOfficeId?: number | null }) => Promise<void>;
+  onSubmitEditStation?: (stationId: number, data: { stationName: string; region: string; latitude: number; longitude: number; batteryVoltageType?: string; batteryCurrentVoltage?: number; stationType?: string; regionalOfficeId?: number | null; simNumber?: string | null; wigosSeries?: string; wigosIssuer?: string; wigosIssueNum?: string; wigosLocalId?: string }) => Promise<void>;
 }
 
 export default function Modals({
@@ -54,6 +54,11 @@ export default function Modals({
   const [batteryCurrentVoltage, setBatteryCurrentVoltage] = useState('12.0');
   const [stationType, setStationType] = useState('Climate');
   const [stationRegionalOfficeId, setStationRegionalOfficeId] = useState<string>('');
+  const [stationSimNumber, setStationSimNumber] = useState('');
+  const [wigosSeries, setWigosSeries] = useState('1');
+  const [wigosIssuer, setWigosIssuer] = useState('0');
+  const [wigosIssueNum, setWigosIssueNum] = useState('20001');
+  const [wigosLocalId, setWigosLocalId] = useState('0-STATIONID');
   const [regionalOffices, setRegionalOffices] = useState<any[]>([]);
 
   useEffect(() => {
@@ -118,6 +123,11 @@ export default function Modals({
       setBatteryCurrentVoltage(editingStation.batteryCurrentVoltage !== undefined && editingStation.batteryCurrentVoltage !== null ? editingStation.batteryCurrentVoltage.toString() : '12.0');
       setStationType(editingStation.stationType || 'Climate');
       setStationRegionalOfficeId(editingStation.regionalOfficeId ? editingStation.regionalOfficeId.toString() : '');
+      setStationSimNumber(editingStation.simNumber || ('984' + Math.floor(1000000 + Math.random() * 9000000)));
+      setWigosSeries(editingStation.wigosSeries || '1');
+      setWigosIssuer(editingStation.wigosIssuer || '0');
+      setWigosIssueNum(editingStation.wigosIssueNum || '20001');
+      setWigosLocalId(editingStation.wigosLocalId || ('0-' + (editingStation.stationName ? editingStation.stationName.split(' ')[0].toUpperCase() : editingStation.stationId)));
     } else if (modalType === 'add-station') {
       setStationName('');
       setStationRegion('');
@@ -127,6 +137,11 @@ export default function Modals({
       setBatteryCurrentVoltage('12.0');
       setStationType('Climate');
       setStationRegionalOfficeId('');
+      setStationSimNumber('984' + Math.floor(1000000 + Math.random() * 9000000));
+      setWigosSeries('1');
+      setWigosIssuer('0');
+      setWigosIssueNum('20001');
+      setWigosLocalId('0-STATIONID');
     } else if (modalType === 'log-calibration') {
       if (selectedSensorForCalibId) {
         setCalSensorId(selectedSensorForCalibId.toString());
@@ -169,6 +184,11 @@ export default function Modals({
           batteryCurrentVoltage: isNaN(parsedBatteryCurrentVoltage) ? undefined : parsedBatteryCurrentVoltage,
           stationType,
           regionalOfficeId: stationRegionalOfficeId ? parseInt(stationRegionalOfficeId) : null,
+          simNumber: stationSimNumber || undefined,
+          wigosSeries,
+          wigosIssuer,
+          wigosIssueNum,
+          wigosLocalId,
         });
       } else if (modalType === 'edit-station' && editingStation && onSubmitEditStation) {
         await onSubmitEditStation(editingStation.stationId, {
@@ -180,6 +200,11 @@ export default function Modals({
           batteryCurrentVoltage: isNaN(parsedBatteryCurrentVoltage) ? undefined : parsedBatteryCurrentVoltage,
           stationType,
           regionalOfficeId: stationRegionalOfficeId ? parseInt(stationRegionalOfficeId) : null,
+          simNumber: stationSimNumber || undefined,
+          wigosSeries,
+          wigosIssuer,
+          wigosIssueNum,
+          wigosLocalId,
         });
       }
       // reset
@@ -322,9 +347,88 @@ export default function Modals({
                   type="text"
                   placeholder="e.g. Mount Wellington Observatory"
                   value={stationName}
-                  onChange={(e) => setStationName(e.target.value)}
+                  onChange={(e) => {
+                    const newName = e.target.value;
+                    setStationName(newName);
+                    if (modalType === 'add-station' && (wigosLocalId === '0-STATIONID' || wigosLocalId.startsWith('0-'))) {
+                      const firstWord = newName.trim().split(/\s+/)[0];
+                      if (firstWord) {
+                        setWigosLocalId(`0-${firstWord.toUpperCase()}`);
+                      }
+                    }
+                  }}
                   className="w-full bg-[#131316] border border-[#1f1f23] text-white placeholder-zinc-600 focus:border-blue-500/50 rounded-md py-2 px-3 text-sm focus:outline-none transition"
                 />
+              </div>
+
+              {/* 4-Part WIGOS Station Identifier (WSI) Configurator */}
+              <div className="p-3.5 bg-[#131316] border border-[#27272a] rounded-lg space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-bold text-teal-400 uppercase tracking-wider font-mono flex items-center gap-1.5">
+                    WIGOS Station Identifier (WSI)
+                  </label>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-teal-500/10 text-teal-300 border border-teal-500/30">
+                    WMO No. 1160
+                  </span>
+                </div>
+
+                {/* Formatted Preview */}
+                <div className="bg-[#09090b] border border-teal-900/40 rounded px-3 py-2 flex items-center justify-between">
+                  <span className="text-[10px] text-zinc-400 font-mono">Formatted WSI:</span>
+                  <span className="text-xs font-mono font-bold text-teal-400 tracking-wider">
+                    {wigosSeries || '1'}-{wigosIssuer || '0'}-{wigosIssueNum || '20001'}-{wigosLocalId || '0-STATIONID'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-4 gap-2">
+                  <div className="space-y-1">
+                    <label className="text-[9px] text-zinc-400 block font-mono">1. Series</label>
+                    <input
+                      id="modal-wigos-series"
+                      type="text"
+                      placeholder="1"
+                      value={wigosSeries}
+                      onChange={(e) => setWigosSeries(e.target.value)}
+                      className="w-full bg-[#09090b] border border-[#27272a] text-white rounded py-1.5 px-2 text-xs font-mono text-center focus:border-teal-500 focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] text-zinc-400 block font-mono">2. Issuer</label>
+                    <input
+                      id="modal-wigos-issuer"
+                      type="text"
+                      placeholder="0"
+                      value={wigosIssuer}
+                      onChange={(e) => setWigosIssuer(e.target.value)}
+                      className="w-full bg-[#09090b] border border-[#27272a] text-white rounded py-1.5 px-2 text-xs font-mono text-center focus:border-teal-500 focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] text-zinc-400 block font-mono">3. Issue Num</label>
+                    <input
+                      id="modal-wigos-issue-num"
+                      type="text"
+                      placeholder="20001"
+                      value={wigosIssueNum}
+                      onChange={(e) => setWigosIssueNum(e.target.value)}
+                      className="w-full bg-[#09090b] border border-[#27272a] text-white rounded py-1.5 px-2 text-xs font-mono text-center focus:border-teal-500 focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] text-zinc-400 block font-mono">4. Local ID</label>
+                    <input
+                      id="modal-wigos-local-id"
+                      type="text"
+                      placeholder="0-KTM01"
+                      value={wigosLocalId}
+                      onChange={(e) => setWigosLocalId(e.target.value)}
+                      className="w-full bg-[#09090b] border border-[#27272a] text-white rounded py-1.5 px-2 text-xs font-mono text-center focus:border-teal-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+                <p className="text-[10px] text-zinc-500 leading-normal">
+                  Configurable 4-part WMO WIGOS structure: Series (1) - Issuer (0) - Issue Number - Local Station ID.
+                </p>
               </div>
 
               <div className="space-y-1.5">
@@ -364,6 +468,19 @@ export default function Modals({
                     className="w-full bg-[#131316] border border-[#1f1f23] text-white placeholder-zinc-600 focus:border-blue-500/50 rounded-md py-2 px-3 text-sm focus:outline-none transition"
                   />
                 </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest font-mono block">SIM Number (10-digit telemetry card)</label>
+                <input
+                  id="modal-station-sim-number"
+                  type="text"
+                  maxLength={15}
+                  placeholder="e.g. 9841234567"
+                  value={stationSimNumber}
+                  onChange={(e) => setStationSimNumber(e.target.value)}
+                  className="w-full bg-[#131316] border border-[#1f1f23] text-white placeholder-zinc-600 focus:border-blue-500/50 rounded-md py-2 px-3 text-sm font-mono focus:outline-none transition"
+                />
               </div>
 
               <div className="space-y-1.5">

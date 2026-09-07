@@ -11,6 +11,14 @@ export interface WeatherStation {
   sensorCount?: number;
   activeCount?: number;
   regionalOfficeId?: number | null;
+  simNumber?: string | null;
+  status?: string | null;
+  wigosSeries?: string | null;
+  wigosIssuer?: string | null;
+  wigosIssueNum?: string | null;
+  wigosLocalId?: string | null;
+  wigosId?: string | null;
+  wmoId?: string | null;
 }
 
 export interface Sensor {
@@ -36,6 +44,7 @@ export interface Sensor {
   warrantyEndDate?: string | null;
   calibrationInterval?: string | null;
   calibrationDetails?: string | null;
+  calibrationDueDate?: string | null;
   deploymentInfo?: string | null;
   assignedOffice?: string | null;
   responsiblePersonnel?: string | null;
@@ -50,6 +59,7 @@ export interface Sensor {
   wmoSitingClass?: string | null;
   wmoChecklist?: string | null;
   regionalOfficeId?: number | null;
+  coefficients?: SensorCoefficients | null;
 }
 
 export interface Calibration {
@@ -166,6 +176,58 @@ export interface CalibrationJob {
   deviceSerialNumber?: string;
 }
 
+export interface SensorCoefficients {
+  modelType: 'Linear' | 'Polynomial' | 'Multi-Point Curve';
+  slope: number;
+  offset: number;
+  polyA?: number;
+  polyB?: number;
+  polyC?: number;
+  multiplier?: number;
+  unit?: string;
+  equationFormula?: string;
+  lastAdjustedDate?: string;
+  adjustedBy?: string;
+  notes?: string;
+}
+
+export interface InSituVerification {
+  id: number;
+  stationId: number;
+  stationName: string;
+  sensorId: number;
+  sensorType: string;
+  sensorSerialNumber: string;
+  portableReferenceName: string;
+  portableReferenceSerial: string;
+  awsReading: number;
+  referenceReading: number;
+  unit: string;
+  delta: number;
+  errorPercentage: number;
+  toleranceLimit: number;
+  status: 'In Tolerance' | 'Out of Tolerance';
+  stationStatus: string;
+  ambientTemp?: number | null;
+  ambientHumidity?: number | null;
+  technicianName: string;
+  verificationDate: string;
+  notes?: string;
+}
+
+export interface SensorSwapPayload {
+  stationId: number;
+  stationName?: string;
+  oldSensorId: number;
+  newSpareSensorId: number;
+  swapDate: string;
+  reason: string;
+  personnelInvolved: string;
+  transferCertificates?: boolean;
+  coefficients?: SensorCoefficients;
+  notes?: string;
+}
+
 export interface DashboardStats {
   totalStations: number;
   totalSensors: number;
@@ -268,4 +330,73 @@ export interface AppDocument {
   serialNumber?: string | null;
   uploadedAt: string;
 }
+
+export interface MaintenanceTicket {
+  ticketNumber: string; // 6-digit number, e.g. "100001"
+  stationId: number;
+  stationName: string;
+  region?: string;
+  status: 'No communication' | 'Warning' | 'critical' | 'sensor issue' | 'firmware issue' | 'others' | string;
+  summary: string;
+  description: string;
+  assignedTo: string; // Username / Person name
+  createdBy?: string;
+  createdAt: string;
+  priority?: 'Low' | 'Medium' | 'High' | 'Emergency';
+  workOrderId?: string | null; // Linked work order ID
+}
+
+export interface WorkOrder {
+  workOrderId: string; // e.g. "WO-100001"
+  workOrderTitle: string;
+  ticketNumbers: string[]; // Assigned 6-digit ticket numbers
+  assignedTeam: string; // Maintenance team / Lead
+  scheduledDate: string;
+  priority: 'Low' | 'Medium' | 'High' | 'Emergency';
+  status: 'Draft' | 'Assigned' | 'In Progress' | 'Completed' | 'On Hold' | 'Cancelled';
+  scopeOfWork: string;
+  createdBy: string;
+  createdAt: string;
+  completedAt?: string | null;
+  completionNotes?: string | null;
+}
+
+export interface StationHealth {
+  healthId: number;
+  stationId: number;
+  lastReportedTime: string;
+  batteryLevel: number; // percentage (0 - 100)
+  signalStrength: string; // e.g. "-78 dBm (Good)"
+  alertStatus: 'OK' | 'Warning' | 'Critical' | string;
+  createdAt?: string;
+  // Joined station details
+  stationName?: string;
+  region?: string;
+  stationType?: string | null;
+  batteryCurrentVoltage?: number | null;
+  wigosLocalId?: string | null;
+  wigosId?: string | null;
+}
+
+export interface Designation {
+  id: number;
+  title: string;
+  code?: string | null;
+  department?: string | null;
+  description?: string | null;
+  status: 'Active' | 'Inactive' | string;
+  createdAt?: string;
+}
+
+export interface RegionalOffice {
+  id: number;
+  officeName: string;
+  address?: string | null;
+  phoneNumber?: string | null;
+  emailId?: string | null;
+  website?: string | null;
+  createdAt?: string;
+}
+
+
 

@@ -17,7 +17,7 @@ export const createPool = () => {
 };
 
 // Create a pool instance.
-const pool = createPool();
+export const pool = createPool();
 
 // Prevent unhandled pool-level errors from crashing the application
 pool.on('error', (err) => {

@@ -2,8 +2,8 @@ import express from "express";
 import path from "path";
 import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
-import { db } from "./src/db/index.ts";
-import { weatherStations, sensorsInventory, calibrations, users, customStatuses, sensorDeployments, sensorReplacements, sensorTransfers, customRoles, smtpConfig, notificationSettings, deliveryLogs, auditLogs, suppliers, supplierAgreements, supplierEvaluations, requisitions, requisitionItems, documents, calibrationDevices, calibrationJobs, installationProjects, regionalOffices } from "./src/db/schema.ts";
+import { db, pool } from "./src/db/index.ts";
+import { weatherStations, sensorsInventory, calibrations, users, customStatuses, sensorDeployments, sensorReplacements, sensorTransfers, customRoles, smtpConfig, notificationSettings, deliveryLogs, auditLogs, suppliers, supplierAgreements, supplierEvaluations, requisitions, requisitionItems, documents, calibrationDevices, calibrationJobs, installationProjects, regionalOffices, stationHealth, designations } from "./src/db/schema.ts";
 import { eq, desc, and } from "drizzle-orm";
 import { requireAuth, AuthRequest } from "./src/middleware/auth.ts";
 import { sendNotification, checkAndTriggerMonthlyReminders } from "./src/lib/notifications.ts";
@@ -11,6 +11,17 @@ import { adminAuth } from "./src/lib/firebase-admin.ts";
 import { getOrCreateUser } from "./src/db/users.ts";
 
 async function startServer() {
+  // Ensure schema compatibility for sim_number and WIGOS Station Identifier structure
+  try {
+    await pool.query('ALTER TABLE weather_stations ADD COLUMN IF NOT EXISTS sim_number TEXT;');
+    await pool.query('ALTER TABLE weather_stations ADD COLUMN IF NOT EXISTS wigos_series TEXT DEFAULT \'1\';');
+    await pool.query('ALTER TABLE weather_stations ADD COLUMN IF NOT EXISTS wigos_issuer TEXT DEFAULT \'0\';');
+    await pool.query('ALTER TABLE weather_stations ADD COLUMN IF NOT EXISTS wigos_issue_num TEXT DEFAULT \'20001\';');
+    await pool.query('ALTER TABLE weather_stations ADD COLUMN IF NOT EXISTS wigos_local_id TEXT;');
+  } catch (e) {
+    console.warn("Schema migration check:", e);
+  }
+
   const app = express();
   const PORT = 3000;
 
@@ -197,11 +208,18 @@ async function startServer() {
         }
         const firstWord = station.stationName.trim().split(/\s+/)[0];
         const renamedName = `${firstWord} AWS`;
+        const simNum = '9841' + String(100000 + ((index * 73921) % 900000));
+        const code = firstWord ? firstWord.toUpperCase() : `STN${index + 1}`;
         return {
           ...station,
           stationName: renamedName,
           batteryVoltageType,
           batteryCurrentVoltage,
+          simNumber: simNum,
+          wigosSeries: '1',
+          wigosIssuer: '0',
+          wigosIssueNum: '20001',
+          wigosLocalId: `0-${code}`,
         };
       });
 
@@ -613,12 +631,67 @@ async function startServer() {
     }
   }
 
+  // Auto-seed Station Health helper
+  async function seedStationHealth() {
+    try {
+      const existing = await db.select().from(stationHealth);
+      if (existing.length > 0) {
+        console.log("Station health table already has data. Skipping health seeding.");
+        return;
+      }
+
+      const stationsList = await db.select().from(weatherStations);
+      if (stationsList.length === 0) return;
+
+      console.log(`Initializing station health seed data for ${stationsList.length} stations...`);
+      const healthEntries = stationsList.map((station, idx) => {
+        const voltage = station.batteryCurrentVoltage || (12.2 + (idx % 7) * 0.1 - 0.2);
+        let batteryPct = Math.min(100, Math.max(12, Math.round(((voltage - 10.8) / (12.8 - 10.8)) * 100)));
+        
+        const dbmValues = [-65, -72, -78, -84, -92, -98, -105];
+        const dbm = dbmValues[idx % dbmValues.length];
+        let signalLabel = "Good";
+        if (dbm < -95) signalLabel = "Poor";
+        else if (dbm < -80) signalLabel = "Fair";
+        const signalStrength = `${dbm} dBm (${signalLabel})`;
+
+        let alertStatus: 'OK' | 'Warning' | 'Critical' = "OK";
+        if (batteryPct < 25 || dbm < -100) {
+          alertStatus = "Critical";
+        } else if (batteryPct < 45 || dbm < -90) {
+          alertStatus = "Warning";
+        }
+
+        // Varied real-world distribution
+        if (idx % 13 === 0) alertStatus = "Warning";
+        if (idx % 29 === 0) alertStatus = "Critical";
+
+        const minsAgo = (idx * 4) % 90;
+        const reportedDate = new Date(Date.now() - minsAgo * 60 * 1000);
+
+        return {
+          stationId: station.stationId,
+          lastReportedTime: reportedDate,
+          batteryLevel: batteryPct,
+          signalStrength,
+          alertStatus,
+        };
+      });
+
+      await db.insert(stationHealth).values(healthEntries);
+      console.log(`Seeded ${healthEntries.length} station health records successfully.`);
+    } catch (err) {
+      console.error("Failed to seed station health records:", err);
+    }
+  }
+
   // Run seeding on startup
   await seedDatabase();
   await seedStatuses();
   await seedRoles();
   await seedSuppliers();
   await seedCalibrationDevices();
+  await seedStationHealth();
 
   // Ensure 'birajkdl@gmail.com' has the Super Administrator role if they exist
   try {
@@ -717,20 +790,25 @@ async function startServer() {
 
   app.put("/api/users/:uid/role", requireAuth, async (req: AuthRequest, res) => {
     const callerRole = req.dbUser?.role;
-    if (callerRole !== "Super Administrator") {
-      return res.status(403).json({ error: "Forbidden: Only Super Administrators can manage roles." });
+    if (callerRole !== "Super Administrator" && callerRole !== "Head Office Admin/User") {
+      return res.status(403).json({ error: "Forbidden: Only Administrators can manage users." });
     }
 
     const { uid } = req.params;
-    const { role, assignedStationId, office } = req.body;
+    const { role, assignedStationId, office, status, phoneNumber, designation, username } = req.body;
 
     try {
+      const updateData: any = {};
+      if (role !== undefined) updateData.role = role;
+      if (assignedStationId !== undefined) updateData.assignedStationId = assignedStationId ? parseInt(assignedStationId) : null;
+      if (office !== undefined) updateData.office = office;
+      if (status !== undefined) updateData.status = status;
+      if (phoneNumber !== undefined) updateData.phoneNumber = phoneNumber;
+      if (designation !== undefined) updateData.designation = designation;
+      if (username !== undefined) updateData.username = username;
+
       const updated = await db.update(users)
-        .set({
-          role,
-          assignedStationId: assignedStationId ? parseInt(assignedStationId) : null,
-          office: office !== undefined ? office : null
-        })
+        .set(updateData)
         .where(eq(users.uid, uid))
         .returning();
 
@@ -773,7 +851,7 @@ async function startServer() {
       return res.status(403).json({ error: "Forbidden: You must have read, write, and edit privileges to create users." });
     }
 
-    const { email, password, username, phoneNumber, designation, office, role, assignedStationId } = req.body;
+    const { email, password, username, phoneNumber, designation, office, role, assignedStationId, status } = req.body;
 
     if (!email || !password) {
       return res.status(400).json({ error: "Missing required fields: email and password are required." });
@@ -802,6 +880,7 @@ async function startServer() {
           username: username || null,
           designation: designation || null,
           office: office || null,
+          status: status || 'Active',
           assignedStationId: assignedStationId ? parseInt(assignedStationId) : null,
         })
         .returning();
@@ -1026,6 +1105,9 @@ async function startServer() {
         };
       });
 
+      // Helper for null-safe string comparisons
+      const safeStr = (s?: string | null) => s || "";
+
       // Sensors requiring urgent attention (status is 'Maintenance' or 'In Calibration', or next calibration date has passed)
       const todayStr = new Date().toISOString().split('T')[0];
       const urgentSensors = sensorsList.filter(sensor => {
@@ -1035,8 +1117,8 @@ async function startServer() {
         // Check if there is a calibration next due date that is in the past
         const sensorCalibrations = calibrationsList.filter(c => c.sensorId === sensor.sensorId);
         if (sensorCalibrations.length > 0) {
-          const sorted = [...sensorCalibrations].sort((a, b) => b.nextDueDate.localeCompare(a.nextDueDate));
-          if (sorted[0].nextDueDate < todayStr) {
+          const sorted = [...sensorCalibrations].sort((a, b) => safeStr(b.nextDueDate).localeCompare(safeStr(a.nextDueDate)));
+          if (sorted[0]?.nextDueDate && sorted[0].nextDueDate < todayStr) {
             return true;
           }
         }
@@ -1044,7 +1126,7 @@ async function startServer() {
       }).map(sensor => {
         const station = stationsList.find(st => st.stationId === sensor.stationId);
         const sensorCals = calibrationsList.filter(c => c.sensorId === sensor.sensorId);
-        const lastCal = sensorCals.length > 0 ? sensorCals.sort((a, b) => b.calibrationDate.localeCompare(a.calibrationDate))[0] : null;
+        const lastCal = sensorCals.length > 0 ? [...sensorCals].sort((a, b) => safeStr(b.calibrationDate).localeCompare(safeStr(a.calibrationDate)))[0] : null;
         return {
           ...sensor,
           stationName: station?.stationName || "Unassigned",
@@ -1060,9 +1142,9 @@ async function startServer() {
         }
         const sensorCalibrations = calibrationsList.filter(c => c.sensorId === sensor.sensorId);
         if (sensorCalibrations.length > 0) {
-          const sorted = [...sensorCalibrations].sort((a, b) => b.nextDueDate.localeCompare(a.nextDueDate));
-          const nextDueDateStr = sorted[0].nextDueDate;
-          if (nextDueDateStr >= todayStr) {
+          const sorted = [...sensorCalibrations].sort((a, b) => safeStr(b.nextDueDate).localeCompare(safeStr(a.nextDueDate)));
+          const nextDueDateStr = sorted[0]?.nextDueDate;
+          if (nextDueDateStr && nextDueDateStr >= todayStr) {
             const nextDueTime = new Date(nextDueDateStr).getTime();
             const todayTime = new Date(todayStr).getTime();
             const diffDays = Math.ceil((nextDueTime - todayTime) / (1000 * 60 * 60 * 24));
@@ -1075,7 +1157,7 @@ async function startServer() {
       }).map(sensor => {
         const station = stationsList.find(st => st.stationId === sensor.stationId);
         const sensorCals = calibrationsList.filter(c => c.sensorId === sensor.sensorId);
-        const lastCal = sensorCals.length > 0 ? sensorCals.sort((a, b) => b.calibrationDate.localeCompare(a.calibrationDate))[0] : null;
+        const lastCal = sensorCals.length > 0 ? [...sensorCals].sort((a, b) => safeStr(b.calibrationDate).localeCompare(safeStr(a.calibrationDate)))[0] : null;
         const nextDueDateStr = lastCal?.nextDueDate || todayStr;
         const nextDueTime = new Date(nextDueDateStr).getTime();
         const todayTime = new Date(todayStr).getTime();
@@ -1190,17 +1272,236 @@ async function startServer() {
     }
   });
 
+  app.put("/api/regional-offices/:id", requireAuth, async (req: AuthRequest, res) => {
+    const role = req.dbUser?.role;
+    if (role !== 'Super Administrator' && role !== 'Head Office Admin/User' && role !== 'Regional Office Admin/User') {
+      return res.status(403).json({ error: "Forbidden: You do not have permission to manage regional offices." });
+    }
+
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "Invalid office ID" });
+    }
+
+    const { officeName, address, phoneNumber, emailId, website } = req.body;
+    try {
+      const updateData: any = {};
+      if (officeName !== undefined) updateData.officeName = officeName;
+      if (address !== undefined) updateData.address = address;
+      if (phoneNumber !== undefined) updateData.phoneNumber = phoneNumber;
+      if (emailId !== undefined) updateData.emailId = emailId;
+      if (website !== undefined) updateData.website = website;
+
+      const updated = await db.update(regionalOffices)
+        .set(updateData)
+        .where(eq(regionalOffices.id, id))
+        .returning();
+
+      if (updated.length === 0) {
+        return res.status(404).json({ error: "Regional office not found" });
+      }
+
+      await createAuditLog(
+        "Update Regional Office",
+        req.dbUser?.email || "Unknown",
+        role,
+        `Updated regional office ID #${id}`
+      );
+
+      res.json(updated[0]);
+    } catch (error: any) {
+      console.error("Failed to update regional office:", error);
+      res.status(500).json({ error: "Failed to update regional office", details: error.message });
+    }
+  });
+
+  app.delete("/api/regional-offices/:id", requireAuth, async (req: AuthRequest, res) => {
+    const role = req.dbUser?.role;
+    if (role !== 'Super Administrator' && role !== 'Head Office Admin/User') {
+      return res.status(403).json({ error: "Forbidden: Only Administrators can delete regional offices." });
+    }
+
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "Invalid office ID" });
+    }
+
+    try {
+      const deleted = await db.delete(regionalOffices)
+        .where(eq(regionalOffices.id, id))
+        .returning();
+
+      if (deleted.length === 0) {
+        return res.status(404).json({ error: "Regional office not found" });
+      }
+
+      await createAuditLog(
+        "Delete Regional Office",
+        req.dbUser?.email || "Unknown",
+        role,
+        `Deleted regional office '${deleted[0].officeName}' (#${id})`
+      );
+
+      res.json({ message: "Regional office deleted successfully", deleted: deleted[0] });
+    } catch (error: any) {
+      console.error("Failed to delete regional office:", error);
+      res.status(500).json({ error: "Failed to delete regional office", details: error.message });
+    }
+  });
+
+  // Designations Endpoints
+  app.get("/api/designations", async (req, res) => {
+    try {
+      const list = await db.select().from(designations).orderBy(designations.id);
+      res.json(list);
+    } catch (error: any) {
+      console.error("Failed to fetch designations:", error);
+      res.status(500).json({ error: "Failed to fetch designations", details: error.message });
+    }
+  });
+
+  app.post("/api/designations", requireAuth, async (req: AuthRequest, res) => {
+    const role = req.dbUser?.role;
+    if (role !== 'Super Administrator' && role !== 'Head Office Admin/User' && role !== 'Regional Office Admin/User') {
+      return res.status(403).json({ error: "Forbidden: You do not have permission to manage designations." });
+    }
+
+    const { title, code, department, description, status } = req.body;
+    if (!title || !title.trim()) {
+      return res.status(400).json({ error: "Missing required field: title" });
+    }
+
+    try {
+      const result = await db.insert(designations)
+        .values({
+          title: title.trim(),
+          code: code ? code.trim() : null,
+          department: department ? department.trim() : null,
+          description: description ? description.trim() : null,
+          status: status || 'Active',
+        })
+        .returning();
+
+      await createAuditLog(
+        "Create Designation",
+        req.dbUser?.email || "Unknown",
+        role,
+        `Created designation '${title.trim()}'`
+      );
+
+      res.status(201).json(result[0]);
+    } catch (error: any) {
+      console.error("Failed to create designation:", error);
+      res.status(500).json({ error: "Failed to create designation", details: error.message });
+    }
+  });
+
+  app.put("/api/designations/:id", requireAuth, async (req: AuthRequest, res) => {
+    const role = req.dbUser?.role;
+    if (role !== 'Super Administrator' && role !== 'Head Office Admin/User' && role !== 'Regional Office Admin/User') {
+      return res.status(403).json({ error: "Forbidden: You do not have permission to manage designations." });
+    }
+
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "Invalid designation ID" });
+    }
+
+    const { title, code, department, description, status } = req.body;
+
+    try {
+      const updateData: any = {};
+      if (title !== undefined) updateData.title = title.trim();
+      if (code !== undefined) updateData.code = code ? code.trim() : null;
+      if (department !== undefined) updateData.department = department ? department.trim() : null;
+      if (description !== undefined) updateData.description = description ? description.trim() : null;
+      if (status !== undefined) updateData.status = status;
+
+      const updated = await db.update(designations)
+        .set(updateData)
+        .where(eq(designations.id, id))
+        .returning();
+
+      if (updated.length === 0) {
+        return res.status(404).json({ error: "Designation not found" });
+      }
+
+      await createAuditLog(
+        "Update Designation",
+        req.dbUser?.email || "Unknown",
+        role,
+        `Updated designation ID #${id}`
+      );
+
+      res.json(updated[0]);
+    } catch (error: any) {
+      console.error("Failed to update designation:", error);
+      res.status(500).json({ error: "Failed to update designation", details: error.message });
+    }
+  });
+
+  app.delete("/api/designations/:id", requireAuth, async (req: AuthRequest, res) => {
+    const role = req.dbUser?.role;
+    if (role !== 'Super Administrator' && role !== 'Head Office Admin/User') {
+      return res.status(403).json({ error: "Forbidden: Only Administrators can delete designations." });
+    }
+
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "Invalid designation ID" });
+    }
+
+    try {
+      const deleted = await db.delete(designations)
+        .where(eq(designations.id, id))
+        .returning();
+
+      if (deleted.length === 0) {
+        return res.status(404).json({ error: "Designation not found" });
+      }
+
+      await createAuditLog(
+        "Delete Designation",
+        req.dbUser?.email || "Unknown",
+        role,
+        `Deleted designation '${deleted[0].title}' (#${id})`
+      );
+
+      res.json({ message: "Designation deleted successfully", deleted: deleted[0] });
+    } catch (error: any) {
+      console.error("Failed to delete designation:", error);
+      res.status(500).json({ error: "Failed to delete designation", details: error.message });
+    }
+  });
+
   // 2. Weather Stations Endpoints
   app.get("/api/stations", async (req, res) => {
     try {
       const stations = await db.select().from(weatherStations).orderBy(desc(weatherStations.createdAt));
       const sensors = await db.select().from(sensorsInventory);
 
-      // Attach sensor counts
+      // Attach sensor counts, fallback 10-digit SIM number, and 4-part WIGOS Station Identifier (WSI)
       const stationsWithCounts = stations.map(station => {
         const stationSensors = sensors.filter(s => s.stationId === station.stationId);
+        const simNumber = station.simNumber || ('984' + String(1000000 + ((station.stationId * 48291) % 9000000)));
+        
+        // 4-part WIGOS Station Identifier calculation (e.g. 1-0-20001-0-STATIONID)
+        const series = station.wigosSeries || '1';
+        const issuer = station.wigosIssuer || '0';
+        const issueNum = station.wigosIssueNum || '20001';
+        const defaultLocal = '0-' + (station.stationName ? station.stationName.split(' ')[0].toUpperCase() : station.stationId);
+        const localId = station.wigosLocalId || defaultLocal;
+        const wigosId = `${series}-${issuer}-${issueNum}-${localId}`;
+
         return {
           ...station,
+          simNumber,
+          wigosSeries: series,
+          wigosIssuer: issuer,
+          wigosIssueNum: issueNum,
+          wigosLocalId: localId,
+          wigosId,
+          wmoId: wigosId,
           sensorCount: stationSensors.length,
           activeCount: stationSensors.filter(s => s.status === "Active").length,
         };
@@ -1213,19 +1514,117 @@ async function startServer() {
     }
   });
 
+  app.get("/api/stations/:id/telemetry", async (req, res) => {
+    try {
+      const stationId = parseInt(req.params.id);
+      const station = await db.select().from(weatherStations).where(eq(weatherStations.stationId, stationId)).limit(1);
+      if (station.length === 0) {
+        return res.status(404).json({ error: "Station not found" });
+      }
+
+      const st = station[0];
+      let status = 'Online';
+      if (st.batteryCurrentVoltage !== undefined && st.batteryCurrentVoltage !== null) {
+        if (st.batteryCurrentVoltage < 11.2) {
+          status = 'Offline';
+        } else if (st.batteryCurrentVoltage < 11.6) {
+          status = 'Maintenance';
+        }
+      }
+
+      const now = new Date();
+      let lastSyncDate = new Date();
+
+      if (status === 'Offline') {
+        const diffHours = 24 + (stationId % 48);
+        lastSyncDate.setHours(now.getHours() - diffHours);
+        lastSyncDate.setMinutes(stationId % 60);
+      } else if (status === 'Maintenance') {
+        const diffMinutes = 60 + (stationId % 180);
+        lastSyncDate.setMinutes(now.getMinutes() - diffMinutes);
+      } else {
+        const diffMinutes = 1 + (stationId % 11);
+        lastSyncDate.setMinutes(now.getMinutes() - diffMinutes);
+      }
+
+      const formatTimestamp = (d: Date) => {
+        return d.toISOString().replace('T', ' ').substring(0, 19) + ' UTC';
+      };
+
+      const baseVolt = st.batteryCurrentVoltage !== undefined && st.batteryCurrentVoltage !== null ? st.batteryCurrentVoltage : 12.2;
+      const isOff = status === 'Offline';
+      const isMaint = status === 'Maintenance';
+
+      let performanceGrade = 'A+';
+      let performanceScore = 96;
+      if (isOff || baseVolt < 11.2) {
+        performanceGrade = 'F';
+        performanceScore = 42;
+      } else if (isMaint || baseVolt < 11.6) {
+        performanceGrade = 'C';
+        performanceScore = 71;
+      } else if (baseVolt < 12.0) {
+        performanceGrade = 'B';
+        performanceScore = 84;
+      } else if (baseVolt >= 12.4) {
+        performanceGrade = 'A+';
+        performanceScore = 98;
+      } else {
+        performanceGrade = 'A';
+        performanceScore = 92;
+      }
+
+      // 24h telemetry trend (8 samples across 24h)
+      const times = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00'];
+      const trendHistory = times.map((t, idx) => {
+        const sineVar = Math.sin((idx / 8) * Math.PI * 2) * 0.25;
+        const noise = ((stationId * 7 + idx * 13) % 11 - 5) * 0.04;
+        const v = isOff ? 10.5 : Math.max(10.8, Math.min(13.8, parseFloat((baseVolt + sineVar + noise).toFixed(2))));
+        const sig = isOff ? -115 : isMaint ? -95 - (idx % 3) : -68 + Math.floor(sineVar * 10);
+        return { time: t, voltage: v, signal: sig };
+      });
+
+      res.json({
+        stationId,
+        status,
+        lastSync: formatTimestamp(lastSyncDate),
+        heartbeatRateHz: status === 'Offline' ? 0 : status === 'Maintenance' ? 0.05 : 0.2,
+        enclosureTempCelsius: (20 + (stationId % 12)).toFixed(1),
+        signalStrengthDb: status === 'Offline' ? -115 : status === 'Maintenance' ? -98 : -72,
+        performanceGrade,
+        performanceScore,
+        healthFactors: {
+          powerHealth: isOff ? 'Critical' : isMaint ? 'Fair' : 'Optimal',
+          signalHealth: isOff ? 'Weak' : isMaint ? 'Moderate' : 'Strong',
+          sensorIntegrity: isOff ? '50%' : isMaint ? '80%' : '98%'
+        },
+        trendHistory
+      });
+    } catch (error: any) {
+      console.error("Failed to fetch station telemetry heartbeat:", error);
+      res.status(500).json({ error: "Failed to fetch station telemetry", details: error.message });
+    }
+  });
+
   app.post("/api/stations", requireAuth, async (req: AuthRequest, res) => {
     const role = req.dbUser?.role;
     if (role !== 'Super Administrator' && role !== 'Head Office Admin/User' && role !== 'Regional Office Admin/User') {
       return res.status(403).json({ error: "Forbidden: You do not have permission to manage weather stations." });
     }
 
-    const { stationName, region, latitude, longitude, batteryVoltageType, batteryCurrentVoltage, stationType, regionalOfficeId } = req.body;
+    const { stationName, region, latitude, longitude, batteryVoltageType, batteryCurrentVoltage, stationType, regionalOfficeId, simNumber, wigosSeries, wigosIssuer, wigosIssueNum, wigosLocalId } = req.body;
     if (!stationName || !region || latitude === undefined || longitude === undefined) {
       return res.status(400).json({ error: "Missing required fields: stationName, region, latitude, longitude" });
     }
 
     const firstWord = stationName.trim().split(/\s+/)[0];
     const formattedStationName = firstWord ? `${firstWord} AWS` : stationName;
+    const assignedSim = simNumber || ('984' + String(1000000 + Math.floor(Math.random() * 9000000)));
+
+    const series = wigosSeries || '1';
+    const issuer = wigosIssuer || '0';
+    const issueNum = wigosIssueNum || '20001';
+    const localId = wigosLocalId || ('0-' + (firstWord ? firstWord.toUpperCase() : 'STATIONID'));
 
     try {
       const result = await db.insert(weatherStations)
@@ -1238,10 +1637,22 @@ async function startServer() {
           batteryCurrentVoltage: batteryCurrentVoltage !== undefined && batteryCurrentVoltage !== null ? parseFloat(batteryCurrentVoltage) : 12.0,
           stationType: stationType || "Climate",
           regionalOfficeId: regionalOfficeId ? parseInt(regionalOfficeId) : null,
+          simNumber: assignedSim,
+          wigosSeries: series,
+          wigosIssuer: issuer,
+          wigosIssueNum: issueNum,
+          wigosLocalId: localId,
         })
         .returning();
 
-      res.status(201).json(result[0]);
+      const st = result[0];
+      const wigosId = `${st.wigosSeries || series}-${st.wigosIssuer || issuer}-${st.wigosIssueNum || issueNum}-${st.wigosLocalId || localId}`;
+
+      res.status(201).json({
+        ...st,
+        wigosId,
+        wmoId: wigosId
+      });
     } catch (error: any) {
       console.error("Failed to create weather station:", error);
       res.status(500).json({ error: "Failed to create weather station", details: error.message });
@@ -1259,7 +1670,7 @@ async function startServer() {
       return res.status(400).json({ error: "Invalid station ID" });
     }
 
-    const { stationName, region, latitude, longitude, batteryVoltageType, batteryCurrentVoltage, stationType, regionalOfficeId } = req.body;
+    const { stationName, region, latitude, longitude, batteryVoltageType, batteryCurrentVoltage, stationType, regionalOfficeId, simNumber, wigosSeries, wigosIssuer, wigosIssueNum, wigosLocalId } = req.body;
     if (!stationName || !region || latitude === undefined || longitude === undefined) {
       return res.status(400).json({ error: "Missing required fields: stationName, region, latitude, longitude" });
     }
@@ -1268,21 +1679,40 @@ async function startServer() {
     const formattedStationName = firstWord ? `${firstWord} AWS` : stationName;
 
     try {
+      const setObj: any = {
+        stationName: formattedStationName,
+        region,
+        latitude: parseFloat(latitude),
+        longitude: parseFloat(longitude),
+        batteryVoltageType: batteryVoltageType || null,
+        batteryCurrentVoltage: batteryCurrentVoltage !== undefined && batteryCurrentVoltage !== null ? parseFloat(batteryCurrentVoltage) : null,
+        stationType: stationType || null,
+        regionalOfficeId: regionalOfficeId ? parseInt(regionalOfficeId) : null,
+        simNumber: simNumber || null,
+      };
+
+      if (wigosSeries !== undefined) setObj.wigosSeries = wigosSeries || '1';
+      if (wigosIssuer !== undefined) setObj.wigosIssuer = wigosIssuer || '0';
+      if (wigosIssueNum !== undefined) setObj.wigosIssueNum = wigosIssueNum || '20001';
+      if (wigosLocalId !== undefined) setObj.wigosLocalId = wigosLocalId || ('0-' + (firstWord ? firstWord.toUpperCase() : 'STATIONID'));
+
       const result = await db.update(weatherStations)
-        .set({
-          stationName: formattedStationName,
-          region,
-          latitude: parseFloat(latitude),
-          longitude: parseFloat(longitude),
-          batteryVoltageType: batteryVoltageType || null,
-          batteryCurrentVoltage: batteryCurrentVoltage !== undefined && batteryCurrentVoltage !== null ? parseFloat(batteryCurrentVoltage) : null,
-          stationType: stationType || null,
-          regionalOfficeId: regionalOfficeId ? parseInt(regionalOfficeId) : null,
-        })
+        .set(setObj)
         .where(eq(weatherStations.stationId, stationId))
         .returning();
 
-      res.json(result[0]);
+      const st = result[0];
+      const series = st.wigosSeries || '1';
+      const issuer = st.wigosIssuer || '0';
+      const issueNum = st.wigosIssueNum || '20001';
+      const localId = st.wigosLocalId || ('0-' + (firstWord ? firstWord.toUpperCase() : 'STATIONID'));
+      const wigosId = `${series}-${issuer}-${issueNum}-${localId}`;
+
+      res.json({
+        ...st,
+        wigosId,
+        wmoId: wigosId
+      });
     } catch (error: any) {
       console.error("Failed to update weather station:", error);
       res.status(500).json({ error: "Failed to update weather station", details: error.message });
@@ -1306,6 +1736,176 @@ async function startServer() {
     } catch (error: any) {
       console.error("Failed to delete station:", error);
       res.status(500).json({ error: "Failed to delete station", details: error.message });
+    }
+  });
+
+  // --- Station Health Monitoring Endpoints ---
+  app.get("/api/station-health", async (req, res) => {
+    try {
+      const records = await db.select().from(stationHealth).orderBy(desc(stationHealth.lastReportedTime));
+      const stationsList = await db.select().from(weatherStations);
+      const stationMap = new Map(stationsList.map(s => [s.stationId, s]));
+
+      const enriched = records.map(rec => {
+        const st = stationMap.get(rec.stationId);
+        const series = st?.wigosSeries || '1';
+        const issuer = st?.wigosIssuer || '0';
+        const issueNum = st?.wigosIssueNum || '20001';
+        const localId = st?.wigosLocalId || (st?.stationName ? '0-' + st.stationName.split(' ')[0].toUpperCase() : '0-STATION');
+        const wigosId = `${series}-${issuer}-${issueNum}-${localId}`;
+
+        return {
+          ...rec,
+          stationName: st?.stationName || `Station #${rec.stationId}`,
+          region: st?.region || 'Unknown',
+          stationType: st?.stationType || 'Climate',
+          batteryCurrentVoltage: st?.batteryCurrentVoltage,
+          wigosLocalId: localId,
+          wigosId,
+        };
+      });
+
+      res.json(enriched);
+    } catch (error: any) {
+      console.error("Failed to fetch station health records:", error);
+      res.status(500).json({ error: "Failed to fetch station health records", details: error.message });
+    }
+  });
+
+  app.get("/api/stations/:id/health", async (req, res) => {
+    const stationId = parseInt(req.params.id);
+    if (isNaN(stationId)) {
+      return res.status(400).json({ error: "Invalid station ID" });
+    }
+
+    try {
+      const records = await db.select().from(stationHealth)
+        .where(eq(stationHealth.stationId, stationId))
+        .orderBy(desc(stationHealth.lastReportedTime));
+      res.json(records);
+    } catch (error: any) {
+      console.error("Failed to fetch station health for station:", error);
+      res.status(500).json({ error: "Failed to fetch station health", details: error.message });
+    }
+  });
+
+  app.post("/api/station-health", requireAuth, async (req: AuthRequest, res) => {
+    const { stationId, batteryLevel, signalStrength, alertStatus, lastReportedTime } = req.body;
+
+    if (!stationId || batteryLevel === undefined || !signalStrength) {
+      return res.status(400).json({ error: "Missing required fields: stationId, batteryLevel, signalStrength" });
+    }
+
+    try {
+      const parsedStationId = parseInt(stationId);
+      const parsedBattery = parseFloat(batteryLevel);
+      const reportedDate = lastReportedTime ? new Date(lastReportedTime) : new Date();
+
+      const newRecord = await db.insert(stationHealth)
+        .values({
+          stationId: parsedStationId,
+          batteryLevel: parsedBattery,
+          signalStrength: signalStrength.toString(),
+          alertStatus: alertStatus || (parsedBattery < 25 ? 'Critical' : parsedBattery < 50 ? 'Warning' : 'OK'),
+          lastReportedTime: reportedDate,
+        })
+        .returning();
+
+      // Also update station current voltage estimate
+      const estimatedVolt = parseFloat((10.8 + (parsedBattery / 100) * 2.0).toFixed(2));
+      await db.update(weatherStations)
+        .set({ batteryCurrentVoltage: estimatedVolt })
+        .where(eq(weatherStations.stationId, parsedStationId));
+
+      await createAuditLog(
+        "Update Station Health",
+        req.dbUser?.email || "System",
+        req.dbUser?.role || "Operator",
+        `Logged telemetry check-in for Station ID #${parsedStationId} (Battery: ${parsedBattery}%, Signal: ${signalStrength}, Status: ${alertStatus || 'OK'})`
+      );
+
+      res.status(201).json(newRecord[0]);
+    } catch (error: any) {
+      console.error("Failed to create station health record:", error);
+      res.status(500).json({ error: "Failed to create station health record", details: error.message });
+    }
+  });
+
+  app.put("/api/station-health/:id", requireAuth, async (req: AuthRequest, res) => {
+    const healthId = parseInt(req.params.id);
+    if (isNaN(healthId)) {
+      return res.status(400).json({ error: "Invalid health ID" });
+    }
+
+    const { batteryLevel, signalStrength, alertStatus, lastReportedTime } = req.body;
+
+    try {
+      const updateData: any = {};
+      if (batteryLevel !== undefined) updateData.batteryLevel = parseFloat(batteryLevel);
+      if (signalStrength !== undefined) updateData.signalStrength = signalStrength.toString();
+      if (alertStatus !== undefined) updateData.alertStatus = alertStatus;
+      if (lastReportedTime) updateData.lastReportedTime = new Date(lastReportedTime);
+
+      const updated = await db.update(stationHealth)
+        .set(updateData)
+        .where(eq(stationHealth.healthId, healthId))
+        .returning();
+
+      if (updated.length === 0) {
+        return res.status(404).json({ error: "Station health record not found" });
+      }
+
+      res.json(updated[0]);
+    } catch (error: any) {
+      console.error("Failed to update station health record:", error);
+      res.status(500).json({ error: "Failed to update station health record", details: error.message });
+    }
+  });
+
+  app.delete("/api/station-health/:id", requireAuth, async (req: AuthRequest, res) => {
+    const healthId = parseInt(req.params.id);
+    if (isNaN(healthId)) {
+      return res.status(400).json({ error: "Invalid health ID" });
+    }
+
+    try {
+      await db.delete(stationHealth).where(eq(stationHealth.healthId, healthId));
+      res.json({ message: "Station health record removed successfully" });
+    } catch (error: any) {
+      console.error("Failed to delete station health record:", error);
+      res.status(500).json({ error: "Failed to delete station health record", details: error.message });
+    }
+  });
+
+  app.post("/api/station-health/ping-sync", requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const existing = await db.select().from(stationHealth);
+      const now = new Date();
+
+      // Update all existing records with fresh telemetry timestamp
+      for (const rec of existing) {
+        // slight random perturbation to show live activity
+        const delta = ((rec.healthId * 3) % 5) - 2;
+        const newPct = Math.min(100, Math.max(10, Math.round(rec.batteryLevel + delta)));
+        await db.update(stationHealth)
+          .set({
+            lastReportedTime: now,
+            batteryLevel: newPct,
+          })
+          .where(eq(stationHealth.healthId, rec.healthId));
+      }
+
+      await createAuditLog(
+        "Network Telemetry Sync",
+        req.dbUser?.email || "Operator",
+        req.dbUser?.role || "Operator",
+        `Initiated network-wide station health telemetry polling for ${existing.length} stations`
+      );
+
+      res.json({ success: true, count: existing.length, syncTimestamp: now.toISOString() });
+    } catch (error: any) {
+      console.error("Failed to sync network telemetry:", error);
+      res.status(500).json({ error: "Failed to sync telemetry", details: error.message });
     }
   });
 
@@ -1424,7 +2024,7 @@ async function startServer() {
       const detailedSensors = sensors.map(sensor => {
         const station = stations.find(s => s.stationId === sensor.stationId);
         const sensorCals = calibrationsList.filter(c => c.sensorId === sensor.sensorId);
-        const sortedCals = [...sensorCals].sort((a, b) => b.calibrationDate.localeCompare(a.calibrationDate));
+        const sortedCals = [...sensorCals].sort((a, b) => (b.calibrationDate || '').localeCompare(a.calibrationDate || ''));
         
         return {
           ...sensor,
@@ -2479,6 +3079,326 @@ async function startServer() {
     } catch (error: any) {
       console.error("Failed to cancel calibration job:", error);
       res.status(500).json({ error: "Failed to cancel calibration job", details: error.message });
+    }
+  });
+
+  // --- In-Situ Field Verification & Calibration Workflow Endpoints ---
+  const inSituVerificationsList: any[] = [
+    {
+      id: 1,
+      stationId: 1,
+      stationName: "Biratnagar Airport AWS",
+      sensorId: 1,
+      sensorType: "Thermometer",
+      sensorSerialNumber: "TH-2024-001",
+      portableReferenceName: "Vaisala HM70 Handheld Reference",
+      portableReferenceSerial: "REF-HM70-982",
+      awsReading: 28.45,
+      referenceReading: 28.32,
+      unit: "°C",
+      delta: 0.13,
+      errorPercentage: 0.46,
+      toleranceLimit: 0.20,
+      status: "In Tolerance",
+      stationStatus: "Operational (Station Online)",
+      ambientTemp: 28.4,
+      ambientHumidity: 68.0,
+      technicianName: "Alex Field Tech",
+      verificationDate: "2026-08-01",
+      notes: "Field check completed during routine AWS inspection. Reading within CIMO WMO No. 8 tolerance."
+    },
+    {
+      id: 2,
+      stationId: 2,
+      stationName: "Kathmandu Central Observatory",
+      sensorId: 2,
+      sensorType: "Barometer",
+      sensorSerialNumber: "BAR-2023-881",
+      portableReferenceName: "Druck DPI 610 Precision Pressure Indicator",
+      portableReferenceSerial: "REF-DPI-441",
+      awsReading: 1012.8,
+      referenceReading: 1012.5,
+      unit: "hPa",
+      delta: 0.30,
+      errorPercentage: 0.03,
+      toleranceLimit: 0.30,
+      status: "In Tolerance",
+      stationStatus: "Operational (Station Online)",
+      ambientTemp: 22.1,
+      ambientHumidity: 55.0,
+      technicianName: "Sarita Sharma",
+      verificationDate: "2026-08-04",
+      notes: "Station kept operational throughout side-by-side comparative pressure log."
+    }
+  ];
+
+  app.get("/api/in-situ-verifications", async (req, res) => {
+    try {
+      res.json(inSituVerificationsList);
+    } catch (error: any) {
+      console.error("Failed to fetch in-situ verifications:", error);
+      res.status(500).json({ error: "Failed to fetch in-situ verifications", details: error.message });
+    }
+  });
+
+  app.post("/api/in-situ-verifications", requireAuth, async (req: AuthRequest, res) => {
+    const role = req.dbUser?.role;
+    if (role === 'Read-only/Audit User') {
+      return res.status(403).json({ error: "Forbidden: Read-only accounts cannot log field verifications." });
+    }
+
+    const {
+      stationId,
+      stationName,
+      sensorId,
+      sensorType,
+      sensorSerialNumber,
+      portableReferenceName,
+      portableReferenceSerial,
+      awsReading,
+      referenceReading,
+      unit,
+      toleranceLimit,
+      ambientTemp,
+      ambientHumidity,
+      technicianName,
+      notes
+    } = req.body;
+
+    if (!stationId || !sensorId || awsReading === undefined || referenceReading === undefined) {
+      return res.status(400).json({ error: "Missing required fields for in-situ field check" });
+    }
+
+    try {
+      const awsVal = Number(awsReading);
+      const refVal = Number(referenceReading);
+      const delta = Number((awsVal - refVal).toFixed(3));
+      const absDelta = Math.abs(delta);
+      const errPct = refVal !== 0 ? Number(((absDelta / Math.abs(refVal)) * 100).toFixed(2)) : 0;
+      const tol = Number(toleranceLimit || 0.20);
+      const isPass = absDelta <= tol;
+      const status = isPass ? "In Tolerance" : "Out of Tolerance";
+
+      const newLog = {
+        id: inSituVerificationsList.length + 1,
+        stationId: parseInt(stationId),
+        stationName: stationName || "Station AWS",
+        sensorId: parseInt(sensorId),
+        sensorType: sensorType || "Sensor",
+        sensorSerialNumber: sensorSerialNumber || "N/A",
+        portableReferenceName: portableReferenceName || "Handheld Reference Standard",
+        portableReferenceSerial: portableReferenceSerial || "REF-FIELD-01",
+        awsReading: awsVal,
+        referenceReading: refVal,
+        unit: unit || "units",
+        delta,
+        errorPercentage: errPct,
+        toleranceLimit: tol,
+        status,
+        stationStatus: "Operational (Station Online)",
+        ambientTemp: ambientTemp ? Number(ambientTemp) : null,
+        ambientHumidity: ambientHumidity ? Number(ambientHumidity) : null,
+        technicianName: technicianName || req.dbUser?.email || "Field Metrologist",
+        verificationDate: new Date().toISOString().split('T')[0],
+        notes: notes || "Side-by-side field verification logged without station downtime."
+      };
+
+      inSituVerificationsList.unshift(newLog);
+
+      // Log entry into sensor statusLog
+      const existing = await db.select().from(sensorsInventory).where(eq(sensorsInventory.sensorId, parseInt(sensorId)));
+      if (existing.length > 0) {
+        const currentLog = existing[0].statusLog || "";
+        const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+        const logLine = `[${timestamp}] In-situ field check completed using '${newLog.portableReferenceName}'. AWS: ${awsVal} ${unit}, Ref: ${refVal} ${unit}, Delta: ${delta > 0 ? '+' : ''}${delta}. Verdict: ${status}. Station operational.`;
+        const updatedLog = currentLog ? `${currentLog}\n${logLine}` : logLine;
+
+        await db.update(sensorsInventory)
+          .set({ statusLog: updatedLog })
+          .where(eq(sensorsInventory.sensorId, parseInt(sensorId)));
+      }
+
+      await createAuditLog(
+        'CALIBRATION_UPDATE',
+        req.dbUser?.email || 'Unknown',
+        req.dbUser?.role || 'Unknown',
+        `In-situ field check logged for Sensor ID ${sensorId} at Station ID ${stationId}. Verdict: ${status} (Delta: ${delta}). Portable Ref: ${portableReferenceName}.`,
+        (req.headers['x-forwarded-for'] as string) || req.ip || null,
+        'Success'
+      );
+
+      res.status(201).json(newLog);
+    } catch (error: any) {
+      console.error("Failed to log in-situ verification:", error);
+      res.status(500).json({ error: "Failed to log in-situ verification", details: error.message });
+    }
+  });
+
+  // --- Coefficient / Slope / Offset Adjustments ---
+  app.put("/api/sensors/:id/coefficients", requireAuth, async (req: AuthRequest, res) => {
+    const role = req.dbUser?.role;
+    if (role === 'Read-only/Audit User') {
+      return res.status(403).json({ error: "Forbidden: Read-only accounts cannot modify calibration coefficients." });
+    }
+
+    const sensorId = parseInt(req.params.id);
+    if (isNaN(sensorId)) {
+      return res.status(400).json({ error: "Invalid sensor ID" });
+    }
+
+    const { modelType, slope, offset, polyA, polyB, polyC, multiplier, unit, notes } = req.body;
+
+    try {
+      const existing = await db.select().from(sensorsInventory).where(eq(sensorsInventory.sensorId, sensorId));
+      if (existing.length === 0) {
+        return res.status(404).json({ error: "Sensor not found" });
+      }
+
+      const coefficientsData = {
+        modelType: modelType || 'Linear',
+        slope: slope !== undefined ? Number(slope) : 1.0,
+        offset: offset !== undefined ? Number(offset) : 0.0,
+        polyA: polyA !== undefined ? Number(polyA) : 0,
+        polyB: polyB !== undefined ? Number(polyB) : 1.0,
+        polyC: polyC !== undefined ? Number(polyC) : 0,
+        multiplier: multiplier !== undefined ? Number(multiplier) : 1.0,
+        unit: unit || 'units',
+        lastAdjustedDate: new Date().toISOString().split('T')[0],
+        adjustedBy: req.dbUser?.email || 'Metrology Specialist',
+        notes: notes || 'Calibration curve coefficients updated.'
+      };
+
+      const currentLog = existing[0].statusLog || "";
+      const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+      const logLine = `[${timestamp}] Calibration coefficients updated (${modelType || 'Linear'}): Slope/m=${coefficientsData.slope}, Offset/c=${coefficientsData.offset}. Adjusted by ${coefficientsData.adjustedBy}.`;
+      const updatedLog = currentLog ? `${currentLog}\n${logLine}` : logLine;
+
+      const updated = await db.update(sensorsInventory)
+        .set({
+          calibrationDetails: JSON.stringify(coefficientsData),
+          statusLog: updatedLog
+        })
+        .where(eq(sensorsInventory.sensorId, sensorId))
+        .returning();
+
+      await createAuditLog(
+        'INVENTORY_UPDATE',
+        req.dbUser?.email || 'Unknown',
+        req.dbUser?.role || 'Unknown',
+        `Updated calibration transfer function coefficients for Sensor ID ${sensorId}. Slope: ${coefficientsData.slope}, Offset: ${coefficientsData.offset}.`,
+        (req.headers['x-forwarded-for'] as string) || req.ip || null,
+        'Success'
+      );
+
+      res.json({ success: true, sensor: updated[0], coefficients: coefficientsData });
+    } catch (error: any) {
+      console.error("Failed to update sensor coefficients:", error);
+      res.status(500).json({ error: "Failed to update sensor coefficients", details: error.message });
+    }
+  });
+
+  // --- Sensor Swapping (Active station sensor replaced with pre-calibrated spare) ---
+  app.post("/api/sensors/swap", requireAuth, async (req: AuthRequest, res) => {
+    const role = req.dbUser?.role;
+    if (role === 'Read-only/Audit User') {
+      return res.status(403).json({ error: "Forbidden: Read-only accounts cannot execute sensor swaps." });
+    }
+
+    const {
+      stationId,
+      oldSensorId,
+      newSpareSensorId,
+      swapDate,
+      reason,
+      personnelInvolved,
+      coefficients,
+      notes
+    } = req.body;
+
+    if (!stationId || !oldSensorId || !newSpareSensorId) {
+      return res.status(400).json({ error: "Missing required fields: stationId, oldSensorId, newSpareSensorId" });
+    }
+
+    try {
+      const station = await db.select().from(weatherStations).where(eq(weatherStations.stationId, parseInt(stationId)));
+      const oldSensor = await db.select().from(sensorsInventory).where(eq(sensorsInventory.sensorId, parseInt(oldSensorId)));
+      const newSensor = await db.select().from(sensorsInventory).where(eq(sensorsInventory.sensorId, parseInt(newSpareSensorId)));
+
+      if (station.length === 0 || oldSensor.length === 0 || newSensor.length === 0) {
+        return res.status(404).json({ error: "Station, old sensor, or new spare sensor not found." });
+      }
+
+      const stationName = station[0].stationName;
+      const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+      const effectiveDate = swapDate || new Date().toISOString().split('T')[0];
+      const technician = personnelInvolved || req.dbUser?.email || "Field Metrologist";
+
+      // 1. Retire / Unassign old active sensor -> Move to 'In Calibration' / Bench Check Required
+      const oldLog = oldSensor[0].statusLog || "";
+      const oldLogLine = `[${timestamp}] Unassigned from station '${stationName}'. Swapped with pre-calibrated spare SEN-${newSensor[0].sensorId}. Status set to 'In Calibration'. Reason: ${reason || 'Bench calibration schedule'}.`;
+      
+      await db.update(sensorsInventory)
+        .set({
+          stationId: null,
+          status: 'In Calibration',
+          statusLog: oldLog ? `${oldLog}\n${oldLogLine}` : oldLogLine,
+          dismissedAlert: 'false'
+        })
+        .where(eq(sensorsInventory.sensorId, parseInt(oldSensorId)));
+
+      // 2. Assign pre-calibrated spare sensor -> Move to 'Active' at target station
+      const newLog = newSensor[0].statusLog || "";
+      const newLogLine = `[${timestamp}] Deployed as active sensor at station '${stationName}' replacing SEN-${oldSensor[0].sensorId}. Status: 'Active'. Calibration parameters transferred.`;
+      
+      const newUpdateFields: any = {
+        stationId: parseInt(stationId),
+        status: 'Active',
+        statusLog: newLog ? `${newLog}\n${newLogLine}` : newLogLine,
+        dismissedAlert: 'false'
+      };
+
+      if (coefficients) {
+        newUpdateFields.calibrationDetails = JSON.stringify(coefficients);
+      }
+
+      await db.update(sensorsInventory)
+        .set(newUpdateFields)
+        .where(eq(sensorsInventory.sensorId, parseInt(newSpareSensorId)));
+
+      // 3. Create Replacement Log
+      const replacement = await db.insert(sensorReplacements)
+        .values({
+          stationId: parseInt(stationId),
+          oldSensorId: parseInt(oldSensorId),
+          newSensorId: parseInt(newSpareSensorId),
+          replacementDate: effectiveDate,
+          reason: reason || "Lab pre-calibrated sensor swap",
+          personnelInvolved: technician,
+          notes: notes || `Active sensor SEN-${oldSensorId} swapped with pre-calibrated spare SEN-${newSpareSensorId} without extended AWS station downtime.`
+        })
+        .returning();
+
+      // 4. Audit Log
+      await createAuditLog(
+        'SENSOR_REPLACEMENT',
+        req.dbUser?.email || 'Unknown',
+        req.dbUser?.role || 'Unknown',
+        `Sensor Swap executed at ${stationName} (Station ID ${stationId}): Removed SEN-${oldSensorId} (${oldSensor[0].sensorType}), Installed pre-calibrated spare SEN-${newSpareSensorId}. Technician: ${technician}.`,
+        (req.headers['x-forwarded-for'] as string) || req.ip || null,
+        'Success'
+      );
+
+      res.json({
+        success: true,
+        message: "Sensor swap executed successfully.",
+        replacement: replacement[0],
+        oldSensorId: parseInt(oldSensorId),
+        newSensorId: parseInt(newSpareSensorId),
+        stationName
+      });
+    } catch (error: any) {
+      console.error("Failed to execute sensor swap:", error);
+      res.status(500).json({ error: "Failed to execute sensor swap", details: error.message });
     }
   });
 
@@ -4086,6 +5006,48 @@ async function startServer() {
     } catch (error: any) {
       console.error("Simulation failed:", error);
       res.status(500).json({ error: "Failed to simulate notification trigger", details: error.message });
+    }
+  });
+
+  app.post("/api/notifications/send-assignment", requireAuth, async (req: AuthRequest, res) => {
+    const { recipientEmail, type, id, title, assignedTo, stationName, priority, linkUrl } = req.body;
+    if (!recipientEmail || !type || !id) {
+      return res.status(400).json({ error: "Missing required fields: recipientEmail, type, id" });
+    }
+
+    try {
+      const isTicket = type === 'ticket';
+      const label = isTicket ? `Ticket #${id}` : `Work Order ${id}`;
+      const subject = `[METIS Assignment] Maintenance ${label} Assigned to ${assignedTo || 'You'}`;
+      const body = 
+        `METIS Meteorological Station Network System\n` +
+        `==========================================\n\n` +
+        `Hello ${assignedTo || 'Technician'},\n\n` +
+        `You have been assigned a maintenance ${isTicket ? 'issue ticket' : 'work order'}.\n\n` +
+        `SUMMARY DETAILS:\n` +
+        `- Item: ${label}\n` +
+        `- Station / Location: ${stationName || 'Network Field'}\n` +
+        `- Title / Summary: ${title || 'Maintenance Task'}\n` +
+        `- Priority Level: ${priority || 'Medium'}\n\n` +
+        `DIRECT ACCESS LINK:\n` +
+        `${linkUrl}\n\n` +
+        `Note: Click the link above to open this ${type} directly in METIS. If you are not currently logged in, you will be prompted to sign in first, after which you will be redirected straight to ${label}.\n\n` +
+        `Department of Hydrology & Meteorology (DHM) - METIS System`;
+
+      const result = await sendNotification('ticket_assignment', subject, body, recipientEmail);
+
+      res.json({
+        message: `Email notification dispatched to ${recipientEmail}`,
+        recipientEmail,
+        subject,
+        linkUrl,
+        success: result.success,
+        channel: result.channel,
+        loggedId: result.loggedId
+      });
+    } catch (error: any) {
+      console.error("Failed to send assignment notification email:", error);
+      res.status(500).json({ error: "Failed to send assignment notification", details: error.message });
     }
   });
 

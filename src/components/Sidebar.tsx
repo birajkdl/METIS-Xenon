@@ -32,8 +32,8 @@ import {
 import { User } from 'firebase/auth';
 
 interface SidebarProps {
-  activeView: 'dashboard' | 'inventory' | 'alerts' | 'registration' | 'lifecycle' | 'status-tracking' | 'deployments' | 'transfers' | 'administration' | 'warranty' | 'gis' | 'notifications' | 'reports' | 'audit' | 'suppliers' | 'requisitions' | 'stations' | 'documents' | 'calibration-lab' | 'installation-planning' | 'capital-budgeting';
-  setActiveView: (view: 'dashboard' | 'inventory' | 'alerts' | 'registration' | 'lifecycle' | 'status-tracking' | 'deployments' | 'transfers' | 'administration' | 'warranty' | 'gis' | 'notifications' | 'reports' | 'audit' | 'suppliers' | 'requisitions' | 'stations' | 'documents' | 'calibration-lab' | 'installation-planning' | 'capital-budgeting') => void;
+  activeView: 'dashboard' | 'station-health' | 'inventory' | 'alerts' | 'registration' | 'lifecycle' | 'status-tracking' | 'deployments' | 'transfers' | 'administration' | 'warranty' | 'gis' | 'notifications' | 'reports' | 'audit' | 'suppliers' | 'requisitions' | 'stations' | 'documents' | 'calibration-lab' | 'installation-planning' | 'capital-budgeting' | 'maintenance';
+  setActiveView: (view: 'dashboard' | 'station-health' | 'inventory' | 'alerts' | 'registration' | 'lifecycle' | 'status-tracking' | 'deployments' | 'transfers' | 'administration' | 'warranty' | 'gis' | 'notifications' | 'reports' | 'audit' | 'suppliers' | 'requisitions' | 'stations' | 'documents' | 'calibration-lab' | 'installation-planning' | 'capital-budgeting' | 'maintenance') => void;
   user: User | null;
   role: string | null;
   onLogin: () => void;
@@ -102,6 +102,19 @@ export default function Sidebar({
             </button>
 
             <button
+              id="nav-station-health-btn"
+              onClick={() => setActiveView('station-health')}
+              className={`w-full flex items-center space-x-3 px-4 py-2.5 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer ${
+                activeView === 'station-health'
+                  ? 'bg-white/5 border border-white/10 text-white shadow-xs'
+                  : 'text-zinc-400 border border-transparent hover:text-white hover:bg-white/[0.02]'
+              }`}
+            >
+              <Activity className="h-4 w-4 shrink-0 text-emerald-400" />
+              <span>Station Health</span>
+            </button>
+
+            <button
               id="nav-gis-btn"
               onClick={() => setActiveView('gis')}
               className={`w-full flex items-center space-x-3 px-4 py-2.5 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer ${
@@ -138,6 +151,19 @@ export default function Sidebar({
             >
               <Wrench className="h-4 w-4 shrink-0 text-teal-400 animate-pulse" />
               <span>Installation Planner</span>
+            </button>
+
+            <button
+              id="nav-maintenance-btn"
+              onClick={() => setActiveView('maintenance')}
+              className={`w-full flex items-center space-x-3 px-4 py-2.5 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer ${
+                activeView === 'maintenance'
+                  ? 'bg-white/5 border border-white/10 text-white shadow-xs'
+                  : 'text-zinc-400 border border-transparent hover:text-white hover:bg-white/[0.02]'
+              }`}
+            >
+              <ClipboardList className="h-4 w-4 shrink-0 text-amber-400" />
+              <span>Maintenance</span>
             </button>
 
             <button

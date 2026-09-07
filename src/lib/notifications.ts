@@ -210,7 +210,7 @@ export async function checkAndTriggerMonthlyReminders(): Promise<{
       const sensorCals = calibrationsList.filter((c) => c.sensorId === sensor.sensorId);
       if (sensorCals.length > 0) {
         // Sort to get latest calibration due date
-        const latestCal = [...sensorCals].sort((a, b) => b.nextDueDate.localeCompare(a.nextDueDate))[0];
+        const latestCal = [...sensorCals].sort((a, b) => (b.nextDueDate || '').localeCompare(a.nextDueDate || ''))[0];
         
         // If due date is in the next 30 days
         if (latestCal.nextDueDate >= todayStr && latestCal.nextDueDate <= thirtyDaysStr) {

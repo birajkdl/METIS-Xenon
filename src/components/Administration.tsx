@@ -19,6 +19,8 @@ import {
   Lock
 } from 'lucide-react';
 import { Sensor, WeatherStation } from '../types.ts';
+import OfficesManager from './OfficesManager.tsx';
+import DesignationsManager from './DesignationsManager.tsx';
 
 interface DbUser {
   uid: string;
@@ -32,6 +34,7 @@ interface DbUser {
   username?: string | null;
   designation?: string | null;
   office?: string | null;
+  status?: string | null;
   createdAt?: string;
 }
 
@@ -60,7 +63,7 @@ export default function Administration({
   currentUserRole,
   onRefreshData
 }: AdministrationProps) {
-  const [activeSubTab, setActiveSubTab] = useState<'users' | 'roles' | 'approvals'>('users');
+  const [activeSubTab, setActiveSubTab] = useState<'users' | 'offices' | 'designation' | 'roles' | 'approvals'>('users');
   
   // Data States
   const [usersList, setUsersList] = useState<DbUser[]>([]);
@@ -89,6 +92,7 @@ export default function Administration({
   const [newUserOffice, setNewUserOffice] = useState('');
   const [newUserRole, setNewUserRole] = useState('Read-only/Audit User');
   const [newUserStationId, setNewUserStationId] = useState('unassigned');
+  const [newUserStatus, setNewUserStatus] = useState<string>('Active');
 
   // New Custom Role Form State
   const [newRoleName, setNewRoleName] = useState('');
@@ -110,6 +114,7 @@ export default function Administration({
   const [editRole, setEditRole] = useState('');
   const [editStationId, setEditStationId] = useState<string>('unassigned');
   const [editOffice, setEditOffice] = useState('');
+  const [editStatus, setEditStatus] = useState<string>('Active');
   const [regionalOfficesList, setRegionalOfficesList] = useState<any[]>([]);
 
   // Load everything
@@ -256,7 +261,8 @@ export default function Administration({
           designation: newUserDesignation.trim() || null,
           office: newUserOffice.trim() || null,
           role: newUserRole,
-          assignedStationId: newUserStationId !== 'unassigned' ? parseInt(newUserStationId) : null
+          assignedStationId: newUserStationId !== 'unassigned' ? parseInt(newUserStationId) : null,
+          status: newUserStatus
         })
       });
 
@@ -272,6 +278,7 @@ export default function Administration({
         setNewUserOffice('');
         setNewUserRole('Read-only/Audit User');
         setNewUserStationId('unassigned');
+        setNewUserStatus('Active');
         
         // Go back to listing tab
         setUsersSubTab('users');
@@ -400,6 +407,7 @@ export default function Administration({
     setEditRole(u.role);
     setEditStationId(u.assignedStationId ? u.assignedStationId.toString() : 'unassigned');
     setEditOffice(u.office || '');
+    setEditStatus(u.status || 'Active');
   };
 
   // Save User Privilege Updates
@@ -419,7 +427,8 @@ export default function Administration({
         body: JSON.stringify({
           role: editRole,
           assignedStationId: editStationId === 'unassigned' ? null : parseInt(editStationId),
-          office: editOffice
+          office: editOffice,
+          status: editStatus
         })
       });
 
@@ -625,6 +634,10 @@ export default function Administration({
   const filteredUsers = usersList.filter(u => 
     u.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
     (u.displayName && u.displayName.toLowerCase().includes(searchQuery.toLowerCase())) ||
+    (u.username && u.username.toLowerCase().includes(searchQuery.toLowerCase())) ||
+    (u.office && u.office.toLowerCase().includes(searchQuery.toLowerCase())) ||
+    (u.phoneNumber && u.phoneNumber.toLowerCase().includes(searchQuery.toLowerCase())) ||
+    (u.status && u.status.toLowerCase().includes(searchQuery.toLowerCase())) ||
     u.role.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
@@ -666,7 +679,23 @@ export default function Administration({
             activeSubTab === 'users' ? 'border-blue-500 text-white' : 'border-transparent text-zinc-500 hover:text-zinc-300'
           }`}
         >
-          User Directories ({usersList.length})
+          Users ({usersList.length})
+        </button>
+        <button
+          onClick={() => { setActiveSubTab('offices'); setSuccessMsg(null); setErrorMsg(null); }}
+          className={`pb-3 text-xs font-mono tracking-wider uppercase font-semibold border-b-2 transition-all cursor-pointer ${
+            activeSubTab === 'offices' ? 'border-blue-500 text-white' : 'border-transparent text-zinc-500 hover:text-zinc-300'
+          }`}
+        >
+          Offices
+        </button>
+        <button
+          onClick={() => { setActiveSubTab('designation'); setSuccessMsg(null); setErrorMsg(null); }}
+          className={`pb-3 text-xs font-mono tracking-wider uppercase font-semibold border-b-2 transition-all cursor-pointer ${
+            activeSubTab === 'designation' ? 'border-blue-500 text-white' : 'border-transparent text-zinc-500 hover:text-zinc-300'
+          }`}
+        >
+          Designation
         </button>
         <button
           onClick={() => { setActiveSubTab('roles'); setSuccessMsg(null); setErrorMsg(null); }}
@@ -738,77 +767,65 @@ export default function Administration({
                 )}
               </div>
 
-              <div className="bg-[#0b0b0e] border border-[#1f1f23] rounded-xl overflow-hidden shadow-xl">
-                <table className="w-full text-left border-collapse">
+              <div className="bg-[#0b0b0e] border border-[#1f1f23] rounded-xl overflow-hidden shadow-xl overflow-x-auto">
+                <table className="w-full text-left border-collapse min-w-[760px]">
                   <thead>
                     <tr className="bg-[#0f0f12] border-b border-[#1f1f23] text-[10px] text-zinc-400 font-mono tracking-wider uppercase">
-                      <th className="py-4 px-6 font-medium">Terminal operator / Email</th>
-                      <th className="py-4 px-6 font-medium">Clearance level (Role)</th>
-                      <th className="py-4 px-6 font-medium">Terminal Bound (Station)</th>
-                      <th className="py-4 px-6 font-medium text-right">Security Operations</th>
+                      <th className="py-4 px-4 font-medium">Name</th>
+                      <th className="py-4 px-4 font-medium">email</th>
+                      <th className="py-4 px-4 font-medium">office</th>
+                      <th className="py-4 px-4 font-medium">role</th>
+                      <th className="py-4 px-4 font-medium">Mobile No.</th>
+                      <th className="py-4 px-4 font-medium">status</th>
+                      <th className="py-4 px-4 font-medium text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#17171c] text-xs">
                     {filteredUsers.length === 0 ? (
                       <tr>
-                        <td colSpan={4} className="py-12 text-center text-zinc-500 font-mono">
-                          No terminal records matching secure search hash.
+                        <td colSpan={7} className="py-12 text-center text-zinc-500 font-mono">
+                          No user records matching search criteria.
                         </td>
                       </tr>
                     ) : (
                       filteredUsers.map((u) => {
                         const isEditing = editingUid === u.uid;
+                        const userStatus = u.status || 'Active';
                         return (
                           <tr key={u.uid} className="hover:bg-white/[0.01] transition-all">
-                            <td className="py-4 px-6">
+                            {/* Name */}
+                            <td className="py-3.5 px-4">
                               <div className="flex items-center space-x-3">
-                                <div className="w-8 h-8 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center font-bold text-blue-400 shrink-0">
+                                <div className="w-7 h-7 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center font-bold text-blue-400 shrink-0 text-xs">
                                   {u.username ? u.username.substring(0, 1).toUpperCase() : u.displayName ? u.displayName.substring(0, 1).toUpperCase() : u.email.substring(0, 1).toUpperCase()}
                                 </div>
                                 <div>
-                                  <p className="font-semibold text-white">{u.username || u.displayName || "Station Operator"}</p>
-                                  <p className="text-[10px] text-zinc-500 font-mono">{u.email}</p>
-                                  <div className="flex flex-col space-y-0.5 mt-1">
-                                    {u.phoneNumber && (
-                                      <span className="text-[10px] text-blue-400 font-mono">
-                                        📞 {u.phoneNumber}
-                                      </span>
-                                    )}
-                                    {u.designation && (
-                                      <span className="text-[10px] text-zinc-400 font-mono">
-                                        💼 {u.designation}
-                                      </span>
-                                    )}
-                                    {u.office && (
-                                      <span className="text-[10px] text-emerald-400 font-mono">
-                                        🏢 {u.office}
-                                      </span>
-                                    )}
-                                  </div>
+                                  <p className="font-semibold text-white text-xs">{u.displayName || u.username || "Station Operator"}</p>
+                                  {u.designation && (
+                                    <p className="text-[10px] text-zinc-400 font-mono flex items-center space-x-1">
+                                      <span>{u.designation}</span>
+                                    </p>
+                                  )}
                                 </div>
                               </div>
                             </td>
-                            <td className="py-4 px-6">
+
+                            {/* email */}
+                            <td className="py-3.5 px-4 font-mono text-[11px] text-zinc-300">
+                              {u.email}
+                            </td>
+
+                            {/* office */}
+                            <td className="py-3.5 px-4">
                               {isEditing ? (
-                                <div className="space-y-2 max-w-[200px]">
-                                  <select
-                                    value={editRole}
-                                    onChange={(e) => setEditRole(e.target.value)}
-                                    className="bg-[#0c0c0f] border border-[#232329] text-white text-xs rounded-lg p-1.5 focus:outline-hidden focus:border-blue-500 w-full"
-                                  >
-                                    {combinedRoles.map((roleOpt) => (
-                                      <option key={roleOpt} value={roleOpt}>
-                                        {roleOpt}
-                                      </option>
-                                    ))}
-                                  </select>
+                                <div className="space-y-1 min-w-[130px]">
                                   <input
                                     type="text"
                                     list="edit-user-offices"
-                                    placeholder="Office/Branch Name"
+                                    placeholder="Office/Branch"
                                     value={editOffice}
                                     onChange={(e) => setEditOffice(e.target.value)}
-                                    className="bg-[#0c0c0f] border border-[#232329] text-white text-xs rounded-lg p-1.5 focus:outline-hidden focus:border-blue-500 w-full"
+                                    className="bg-[#0c0c0f] border border-[#232329] text-white text-xs rounded-md p-1.5 focus:outline-hidden focus:border-blue-500 w-full"
                                   />
                                   <datalist id="edit-user-offices">
                                     {regionalOfficesList.map(o => (
@@ -817,54 +834,129 @@ export default function Administration({
                                   </datalist>
                                 </div>
                               ) : (
-                                <span className={`px-2.5 py-1 rounded-full text-[10px] font-mono tracking-wide font-semibold inline-block ${
-                                  u.role === 'Super Administrator'
-                                    ? 'bg-red-500/10 border border-red-500/20 text-red-400'
-                                    : u.role === 'Head Office Admin/User'
-                                    ? 'bg-blue-500/10 border border-blue-500/20 text-blue-400'
-                                    : u.role === 'Supplier account'
-                                    ? 'bg-purple-500/10 border border-purple-500/20 text-purple-400'
-                                    : 'bg-zinc-500/10 border border-zinc-500/20 text-zinc-400'
-                                }`}>
-                                  {u.role}
+                                <span className="font-mono text-[11px] text-zinc-300 flex items-center space-x-1">
+                                  <Building className="h-3 w-3 text-zinc-500 shrink-0" />
+                                  <span>{u.office || "Head Office"}</span>
                                 </span>
                               )}
                             </td>
-                            <td className="py-4 px-6">
+
+                            {/* role */}
+                            <td className="py-3.5 px-4">
+                              {isEditing ? (
+                                <div className="space-y-1.5 min-w-[150px]">
+                                  <select
+                                    value={editRole}
+                                    onChange={(e) => setEditRole(e.target.value)}
+                                    className="bg-[#0c0c0f] border border-[#232329] text-white text-xs rounded-md p-1.5 focus:outline-hidden focus:border-blue-500 w-full"
+                                  >
+                                    {combinedRoles.map((roleOpt) => (
+                                      <option key={roleOpt} value={roleOpt}>
+                                        {roleOpt}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  {(editRole === 'Station User (optional)' || editRole === 'Synoptic/Aero-synoptic office User') && (
+                                    <select
+                                      value={editStationId}
+                                      onChange={(e) => setEditStationId(e.target.value)}
+                                      className="bg-[#0c0c0f] border border-[#232329] text-white text-[11px] rounded-md p-1 focus:outline-hidden focus:border-blue-500 w-full font-mono"
+                                    >
+                                      <option value="unassigned">All Stations / Unassigned</option>
+                                      {stations.map((st) => (
+                                        <option key={st.stationId} value={st.stationId}>
+                                          {st.stationName}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </div>
+                              ) : (
+                                <div>
+                                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono tracking-wide font-semibold inline-block ${
+                                    u.role === 'Super Administrator'
+                                      ? 'bg-red-500/10 border border-red-500/20 text-red-400'
+                                      : u.role === 'Head Office Admin/User'
+                                      ? 'bg-blue-500/10 border border-blue-500/20 text-blue-400'
+                                      : u.role === 'Supplier account'
+                                      ? 'bg-purple-500/10 border border-purple-500/20 text-purple-400'
+                                      : 'bg-zinc-500/10 border border-zinc-500/20 text-zinc-400'
+                                  }`}>
+                                    {u.role}
+                                  </span>
+                                  {u.stationName && (
+                                    <p className="text-[10px] text-zinc-500 font-mono mt-0.5">
+                                      📍 {u.stationName}
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                            </td>
+
+                            {/* Mobile No. */}
+                            <td className="py-3.5 px-4 font-mono text-[11px] text-zinc-400">
+                              {u.phoneNumber || <span className="text-zinc-600">-</span>}
+                            </td>
+
+                            {/* status */}
+                            <td className="py-3.5 px-4">
                               {isEditing ? (
                                 <select
-                                  value={editStationId}
-                                  onChange={(e) => setEditStationId(e.target.value)}
-                                  disabled={editRole !== 'Station User (optional)' && editRole !== 'Synoptic/Aero-synoptic office User'}
-                                  className="bg-[#0c0c0f] border border-[#232329] text-white text-xs rounded-lg p-1.5 focus:outline-hidden focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                                  value={editStatus}
+                                  onChange={(e) => setEditStatus(e.target.value)}
+                                  className="bg-[#0c0c0f] border border-[#232329] text-white text-xs rounded-md p-1.5 focus:outline-hidden focus:border-blue-500 min-w-[100px]"
                                 >
-                                  <option value="unassigned">All Stations / Unassigned</option>
-                                  {stations.map((st) => (
-                                    <option key={st.stationId} value={st.stationId}>
-                                      {st.stationName}
-                                    </option>
-                                  ))}
+                                  <option value="Active">Active</option>
+                                  <option value="deactive">deactive</option>
+                                  <option value="invited">invited</option>
+                                  <option value="pending">pending</option>
                                 </select>
                               ) : (
-                                <span className="font-mono text-[11px] text-zinc-400 flex items-center space-x-1">
-                                  <Building className="h-3.5 w-3.5 text-zinc-500" />
-                                  <span>{u.stationName || "All Stations / Global"}</span>
-                                </span>
+                                (() => {
+                                  const s = userStatus.toLowerCase();
+                                  let badgeClasses = "bg-emerald-500/10 border-emerald-500/20 text-emerald-400";
+                                  let dotColor = "bg-emerald-400";
+                                  let label = "Active";
+
+                                  if (s === 'deactive' || s === 'inactive') {
+                                    badgeClasses = "bg-rose-500/10 border-rose-500/20 text-rose-400";
+                                    dotColor = "bg-rose-400";
+                                    label = "deactive";
+                                  } else if (s === 'invited') {
+                                    badgeClasses = "bg-blue-500/10 border-blue-500/20 text-blue-400";
+                                    dotColor = "bg-blue-400";
+                                    label = "invited";
+                                  } else if (s === 'pending') {
+                                    badgeClasses = "bg-amber-500/10 border-amber-500/20 text-amber-400";
+                                    dotColor = "bg-amber-400";
+                                    label = "pending";
+                                  }
+
+                                  return (
+                                    <span className={`inline-flex items-center space-x-1.5 px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border ${badgeClasses}`}>
+                                      <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
+                                      <span>{label}</span>
+                                    </span>
+                                  );
+                                })()
                               )}
                             </td>
-                            <td className="py-4 px-6 text-right">
+
+                            {/* Actions */}
+                            <td className="py-3.5 px-4 text-right">
                               {currentUserRole === 'Super Administrator' ? (
                                 isEditing ? (
                                   <div className="flex justify-end space-x-2">
                                     <button
                                       onClick={() => handleSaveUserPrivileges(u.uid)}
-                                      className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-md text-[11px] font-semibold transition-all cursor-pointer"
+                                      className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-md text-[11px] font-semibold transition-all cursor-pointer flex items-center space-x-1"
                                     >
-                                      Save Logs
+                                      <Save className="h-3 w-3" />
+                                      <span>Save</span>
                                     </button>
                                     <button
                                       onClick={() => setEditingUid(null)}
-                                      className="px-3 py-1 bg-[#16161c] hover:bg-[#23232e] text-zinc-400 border border-[#25252d] rounded-md text-[11px] font-semibold transition-all cursor-pointer"
+                                      className="px-2.5 py-1 bg-[#16161c] hover:bg-[#23232e] text-zinc-400 border border-[#25252d] rounded-md text-[11px] font-semibold transition-all cursor-pointer"
                                     >
                                       Abort
                                     </button>
@@ -872,13 +964,14 @@ export default function Administration({
                                 ) : (
                                   <button
                                     onClick={() => startEditingUser(u)}
-                                    className="px-3 py-1.5 bg-[#0e0e12] hover:bg-[#1a1a24] text-zinc-300 border border-[#1f1f26] rounded-md text-[11px] font-semibold font-mono tracking-wide transition-all cursor-pointer"
+                                    className="px-2.5 py-1 bg-[#0e0e12] hover:bg-[#1a1a24] text-zinc-300 border border-[#1f1f26] rounded-md text-[11px] font-semibold font-mono tracking-wide transition-all cursor-pointer flex items-center space-x-1 ml-auto"
                                   >
-                                    Edit Clearance
+                                    <Edit2 className="h-3 w-3 text-zinc-400" />
+                                    <span>Edit</span>
                                   </button>
                                 )
                               ) : (
-                                <span className="text-[10px] text-zinc-500 font-mono">No super privileges</span>
+                                <span className="text-[10px] text-zinc-600 font-mono">Read-only</span>
                               )}
                             </td>
                           </tr>
@@ -1011,6 +1104,22 @@ export default function Administration({
                   </div>
                 </div>
 
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-zinc-400 font-medium">Account Status</label>
+                    <select
+                      value={newUserStatus}
+                      onChange={(e) => setNewUserStatus(e.target.value)}
+                      className="w-full bg-[#0d0d10] border border-[#232329] text-white p-2.5 rounded-lg focus:outline-hidden focus:border-blue-500"
+                    >
+                      <option value="Active">Active</option>
+                      <option value="deactive">deactive</option>
+                      <option value="invited">invited</option>
+                      <option value="pending">pending</option>
+                    </select>
+                  </div>
+                </div>
+
                 <button
                   type="submit"
                   disabled={isLoading}
@@ -1022,6 +1131,29 @@ export default function Administration({
               </form>
             </div>
           )}
+        </div>
+      )}
+
+      {/* SUB-TAB: OFFICES */}
+      {activeSubTab === 'offices' && (
+        <div className="animate-fade-in">
+          <OfficesManager
+            stations={stations}
+            sensors={sensors}
+            token={token}
+            currentUserRole={currentUserRole}
+            onRefreshData={onRefreshData}
+          />
+        </div>
+      )}
+
+      {/* SUB-TAB: DESIGNATION */}
+      {activeSubTab === 'designation' && (
+        <div className="animate-fade-in">
+          <DesignationsManager
+            token={token}
+            currentUserRole={currentUserRole}
+          />
         </div>
       )}
 

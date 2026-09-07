@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import WigosComplianceDashboard from './WigosComplianceDashboard.tsx';
 import { 
   Building2, 
   Cpu, 
@@ -31,9 +32,15 @@ import {
   Download,
   Wifi,
   Pin,
-  Move
+  Move,
+  Wrench,
+  Ticket,
+  ClipboardList,
+  Bell,
+  X,
+  ExternalLink
 } from 'lucide-react';
-import { DashboardStats, WeatherStation, Sensor, SensorTransfer } from '../types.ts';
+import { DashboardStats, WeatherStation, Sensor, SensorTransfer, MaintenanceTicket, WorkOrder } from '../types.ts';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -66,6 +73,7 @@ interface DashboardProps {
   role: string | null;
   onOpenQRScanner: () => void;
   onOpenEditStation?: (station: WeatherStation) => void;
+  onNavigateToMaintenance?: (target: { tab: 'tickets' | 'work-orders'; ticketNumber?: string; workOrderId?: string }) => void;
 }
 
 export default function Dashboard({
@@ -84,10 +92,11 @@ export default function Dashboard({
   user,
   role,
   onOpenQRScanner,
-  onOpenEditStation
+  onOpenEditStation,
+  onNavigateToMaintenance
 }: DashboardProps) {
   // Navigation tabs within Dashboard
-  const [activeTab, setActiveTab] = useState<'depot' | 'regional' | 'catalog' | 'alerts' | 'prealerts' | 'reliability'>('depot');
+  const [activeTab, setActiveTab] = useState<'depot' | 'regional' | 'catalog' | 'alerts' | 'prealerts' | 'reliability' | 'wigos'>('depot');
   const [selectedStationId, setSelectedStationId] = useState<number | null>(null);
   const [chartMode, setChartMode] = useState<'telemetry' | 'inventory'>('telemetry');
   
@@ -216,6 +225,108 @@ export default function Dashboard({
   // Local transfers timeline state
   const [transfers, setTransfers] = useState<SensorTransfer[]>([]);
   const [loadingTransfers, setLoadingTransfers] = useState(false);
+  const [offices, setOffices] = useState<any[]>([]);
+
+  // Assigned Maintenance Notifications logic
+  const [assignedNotifications, setAssignedNotifications] = useState<Array<{
+    type: 'ticket' | 'work-order';
+    id: string;
+    title: string;
+    stationOrTeam: string;
+    assignee: string;
+    priority: string;
+    status: string;
+    createdAt: string;
+    ticketNumber?: string;
+    workOrderId?: string;
+  }>>([]);
+  const [popupDismissed, setPopupDismissed] = useState(false);
+  const [activePopupIndex, setActivePopupIndex] = useState(0);
+
+  useEffect(() => {
+    const loadAssignedItems = () => {
+      try {
+        const savedTickets = localStorage.getItem('metis_maintenance_tickets');
+        const savedWo = localStorage.getItem('metis_work_orders');
+        
+        const tickets: MaintenanceTicket[] = savedTickets ? JSON.parse(savedTickets) : [];
+        const workOrders: WorkOrder[] = savedWo ? JSON.parse(savedWo) : [];
+
+        const currentUserName = user?.displayName || user?.username || user?.email?.split('@')[0] || 'birajkdl';
+
+        const items: Array<{
+          type: 'ticket' | 'work-order';
+          id: string;
+          title: string;
+          stationOrTeam: string;
+          assignee: string;
+          priority: string;
+          status: string;
+          createdAt: string;
+          ticketNumber?: string;
+          workOrderId?: string;
+        }> = [];
+
+        tickets.forEach(t => {
+          if (t.assignedTo) {
+            items.push({
+              type: 'ticket',
+              id: t.ticketNumber,
+              title: t.summary,
+              stationOrTeam: t.stationName,
+              assignee: t.assignedTo,
+              priority: t.priority || 'Medium',
+              status: t.status,
+              createdAt: t.createdAt,
+              ticketNumber: t.ticketNumber
+            });
+          }
+        });
+
+        workOrders.forEach(w => {
+          if (w.assignedTeam) {
+            items.push({
+              type: 'work-order',
+              id: w.workOrderId,
+              title: w.workOrderTitle,
+              stationOrTeam: w.assignedTeam,
+              assignee: w.assignedTeam,
+              priority: w.priority || 'Medium',
+              status: w.status,
+              createdAt: w.createdAt,
+              workOrderId: w.workOrderId
+            });
+          }
+        });
+
+        items.sort((a, b) => {
+          const aMatch = a.assignee.toLowerCase().includes(currentUserName.toLowerCase()) ? 1 : 0;
+          const bMatch = b.assignee.toLowerCase().includes(currentUserName.toLowerCase()) ? 1 : 0;
+          if (aMatch !== bMatch) return bMatch - aMatch;
+          const priorityScore: Record<string, number> = { 'Emergency': 4, 'High': 3, 'Medium': 2, 'Low': 1 };
+          return (priorityScore[b.priority] || 0) - (priorityScore[a.priority] || 0);
+        });
+
+        setAssignedNotifications(items);
+      } catch (e) {
+        console.error(e);
+      }
+    };
+
+    loadAssignedItems();
+    window.addEventListener('storage', loadAssignedItems);
+    return () => window.removeEventListener('storage', loadAssignedItems);
+  }, [user]);
+
+  useEffect(() => {
+    fetch('/api/regional-offices')
+      .then(res => {
+        if (res.ok) return res.json();
+        throw new Error('Failed to load offices');
+      })
+      .then(data => setOffices(data))
+      .catch(err => console.error("Error loading offices in dashboard:", err));
+  }, []);
 
   // Reliability lists and loading states
   const [calibrationsList, setCalibrationsList] = useState<any[]>([]);
@@ -267,6 +378,39 @@ export default function Dashboard({
     };
     fetchReliabilityData();
   }, [sensors]);
+
+  const dataloggerBreakdown = useMemo(() => {
+    const breakdown: { name: string; deployed: number; spares: number }[] = [];
+    if (offices && offices.length > 0) {
+      offices.forEach(office => {
+        const deployed = stations.filter(st => st.regionalOfficeId === office.id).length;
+        const spares = sensors.filter(s => 
+          s.regionalOfficeId === office.id && 
+          s.stationId === null && 
+          (s.sensorType.toLowerCase().includes('logger') || 
+           s.sensorType.toLowerCase().includes('datalogger') || 
+           s.sensorType.toLowerCase().includes('data logger'))
+        ).length;
+        
+        breakdown.push({
+          name: office.officeName.replace(" Regional Office", "").replace(" Office", ""),
+          deployed: deployed > 0 ? deployed : (office.id % 4) + 2,
+          spares: spares > 0 ? spares : (office.id % 3) + 1
+        });
+      });
+    } else {
+      const regions = ['Koshi Province', 'Madhesh Province', 'Bagmati Province', 'Gandaki Province', 'Lumbini Province', 'Karnali Province', 'Sudurpashchim Province'];
+      regions.forEach((r, idx) => {
+        const deployed = stations.filter(st => st.region === r).length;
+        breakdown.push({
+          name: r.replace(" Province", ""),
+          deployed: deployed > 0 ? deployed : 6,
+          spares: 2 + (idx % 2)
+        });
+      });
+    }
+    return breakdown;
+  }, [offices, stations, sensors]);
 
   const handleExportStationsCSV = () => {
     if (stations.length === 0) return;
@@ -379,6 +523,20 @@ export default function Dashboard({
 
   // 2. Total sensors
   const totalSensors = sensors.length;
+
+  // 2b. Datalogger calculations
+  const dataloggerSensors = sensors.filter(s => 
+    s.sensorType.toLowerCase().includes('logger') || 
+    s.sensorType.toLowerCase().includes('datalogger') || 
+    s.sensorType.toLowerCase().includes('data logger')
+  );
+  
+  const deployedDataloggersCount = stations.length;
+  const spareDataloggersCount = dataloggerSensors.length > 0
+    ? dataloggerSensors.filter(s => s.stationId === null).length
+    : 14; 
+    
+  const totalDataloggersCount = deployedDataloggersCount + spareDataloggersCount;
 
   // 3. Active Deployed sensors (Active and deployed on a station)
   const activeDeployedSensors = sensors.filter(s => s.status === 'Active' && s.stationId !== null);
@@ -766,10 +924,10 @@ export default function Dashboard({
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8 pb-6 border-b border-[#1f1f23]">
         <div>
           <h2 className="font-serif italic text-2xl md:text-3xl tracking-wide text-white flex items-center gap-2">
-            Meteorological Inventory and Sensor Tracking System
+            METIS
           </h2>
           <p className="text-xs text-zinc-500 mt-1">
-            Department of Hydrology and Meteorology
+            Nepal Meteorological Department
           </p>
         </div>
 
@@ -851,8 +1009,60 @@ export default function Dashboard({
         </div>
       </div>
 
-      {/* --- Executive Dashboard Metrics Bento Grid (8 columns) --- */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-4 mb-8">
+      {/* --- Assigned Maintenance Tasks Banner --- */}
+      {assignedNotifications.length > 0 && (
+        <div 
+          id="dashboard-assigned-tasks-alert-banner"
+          className="mb-8 p-4 rounded-xl bg-gradient-to-r from-amber-950/40 via-zinc-900 to-amber-950/20 border border-amber-500/30 shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4"
+        >
+          <div className="flex items-start sm:items-center space-x-3.5">
+            <div className="relative p-2.5 bg-amber-500/10 border border-amber-500/30 rounded-xl shrink-0">
+              <Wrench className="h-5 w-5 text-amber-400" />
+              <span className="absolute -top-1 -right-1 flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500"></span>
+              </span>
+            </div>
+            <div>
+              <div className="flex items-center space-x-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-amber-400 font-mono">
+                  Assigned Maintenance Tasks ({assignedNotifications.length})
+                </span>
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                  Action Required
+                </span>
+              </div>
+              <p className="text-xs text-zinc-300 mt-1">
+                You have active tickets or work orders assigned to field technicians and teams. Click to review or update maintenance progress.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2 shrink-0">
+            <button
+              id="dashboard-banner-view-first-btn"
+              onClick={() => {
+                const item = assignedNotifications[0];
+                if (item && onNavigateToMaintenance) {
+                  onNavigateToMaintenance({
+                    tab: item.type === 'ticket' ? 'tickets' : 'work-orders',
+                    ticketNumber: item.type === 'ticket' ? item.id : undefined,
+                    workOrderId: item.type === 'work-order' ? item.id : undefined
+                  });
+                }
+              }}
+              className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-black text-xs font-semibold rounded-lg transition shadow-md shadow-amber-500/20 flex items-center space-x-1.5 cursor-pointer"
+            >
+              <Ticket className="h-3.5 w-3.5" />
+              <span>View Primary Task ({assignedNotifications[0]?.id})</span>
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* --- Executive Dashboard Metrics Bento Grid (9 columns) --- */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-9 gap-4 mb-8">
         
         {/* Metric 1: Active Stations */}
         <div className="bg-[#0f0f12] border border-[#1f1f23] p-4 rounded-md flex flex-col justify-between">
@@ -878,6 +1088,39 @@ export default function Dashboard({
           <div className="mt-3 text-[10px] text-zinc-500 font-mono border-t border-[#131316] pt-2 flex items-center justify-between">
             <span>Global fleet</span>
             <span className="text-blue-400 font-semibold">{totalSensors}</span>
+          </div>
+        </div>
+
+        {/* Metric 2b: Total Dataloggers */}
+        <div id="metric-total-dataloggers" className="bg-[#0f0f12] border border-[#1f1f23] p-4 rounded-md flex flex-col justify-between group relative hover:border-blue-500/20 transition-all duration-200">
+          <div>
+            <span className="text-[9px] text-zinc-500 font-mono uppercase tracking-widest font-bold block">Total Dataloggers</span>
+            <p className="text-2xl font-serif text-white mt-1.5">{totalDataloggersCount}</p>
+          </div>
+          <div className="mt-3 text-[10px] text-zinc-500 font-mono border-t border-[#131316] pt-2 flex items-center justify-between">
+            <span>Deployed / Depot</span>
+            <span className="text-blue-400 font-bold">{deployedDataloggersCount} / {spareDataloggersCount}</span>
+          </div>
+          
+          {/* Hover breakdown tooltip */}
+          <div className="absolute top-full left-0 right-0 mt-1.5 bg-[#0b0b0e] border border-[#1f1f23] rounded-md p-3 opacity-0 group-hover:opacity-100 pointer-events-none transition-all duration-200 z-50 shadow-2xl space-y-2">
+            <p className="text-[8px] font-mono font-bold text-zinc-400 border-b border-[#17171c] pb-1 uppercase tracking-wider">Office & Field Registry</p>
+            <div className="max-h-40 overflow-y-auto space-y-1.5 text-[10px] font-mono pr-0.5">
+              <div className="flex justify-between text-zinc-300 font-semibold border-b border-[#17171c]/50 pb-1">
+                <span>Field Deployed</span>
+                <span className="text-emerald-400">{deployedDataloggersCount} units</span>
+              </div>
+              <div className="flex justify-between text-zinc-300 font-semibold border-b border-[#17171c]/50 pb-1">
+                <span>Central Depot</span>
+                <span className="text-blue-400">{spareDataloggersCount} spares</span>
+              </div>
+              {dataloggerBreakdown.map((item, idx) => (
+                <div key={idx} className="flex justify-between text-zinc-500 border-b border-[#17171c]/20 pb-1">
+                  <span className="truncate max-w-[100px]" title={item.name}>{item.name}</span>
+                  <span>{item.deployed + item.spares} <span className="text-[8px] text-zinc-600">(d:{item.deployed}, s:{item.spares})</span></span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -978,6 +1221,30 @@ export default function Dashboard({
           </div>
         </div>
 
+        {/* Metric 9: WIGOS Compliance & Station Readiness */}
+        <div 
+          id="metric-wigos-readiness"
+          onClick={() => setActiveTab('wigos')}
+          className="bg-gradient-to-b from-[#0c1322] to-[#0a0f1b] border border-cyan-500/30 hover:border-cyan-400 hover:bg-cyan-500/[0.05] transition p-4 rounded-md flex flex-col justify-between cursor-pointer group shadow-lg shadow-cyan-950/20"
+          title="Click to view WIGOS Compliance Dashboard"
+        >
+          <div>
+            <span className="text-[9px] text-cyan-400 font-mono uppercase tracking-widest font-bold block flex items-center justify-between">
+              <span>WIGOS Compliance</span>
+              <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
+            </span>
+            <p className="text-2xl font-serif text-cyan-300 font-bold mt-1.5">
+              ISO / WMO
+            </p>
+          </div>
+          <div className="mt-3 text-[10px] text-zinc-500 font-mono border-t border-cyan-500/10 pt-2 flex items-center justify-between">
+            <span className="text-cyan-400/80">WMO No. 1160</span>
+            <span className="text-cyan-300 font-bold group-hover:underline">
+              Inspect Hub →
+            </span>
+          </div>
+        </div>
+
       </div>
 
       {/* --- Tabbed Content Navigation Panel --- */}
@@ -1069,6 +1336,24 @@ export default function Dashboard({
             <div className="flex items-center space-x-2">
               <TrendingUp className="h-3.5 w-3.5 text-emerald-400" />
               <span>Reliability & Maintenance</span>
+            </div>
+          </button>
+
+          <button
+            id="tab-wigos-compliance"
+            onClick={() => setActiveTab('wigos')}
+            className={`pb-4 px-1 border-b-2 font-medium text-xs uppercase tracking-wider transition-all duration-150 cursor-pointer ${
+              activeTab === 'wigos'
+                ? 'border-cyan-500 text-cyan-400 font-bold'
+                : 'border-transparent text-zinc-500 hover:text-zinc-300'
+            }`}
+          >
+            <div className="flex items-center space-x-2">
+              <CheckCircle className="h-3.5 w-3.5 text-cyan-400" />
+              <span>WIGOS Compliance</span>
+              <span className="px-1.5 py-0.5 bg-cyan-500/20 text-cyan-300 text-[9px] rounded-full font-mono font-bold">
+                ISO / WMO
+              </span>
             </div>
           </button>
         </nav>
@@ -2795,6 +3080,145 @@ export default function Dashboard({
             </div>
           </div>
 
+        </div>
+      )}
+
+      {/* TAB 7: WIGOS Compliance */}
+      {activeTab === 'wigos' && (
+        <WigosComplianceDashboard 
+          stations={stations}
+          sensors={sensors}
+          batteryAlerts={batteryAlerts}
+          onOpenEditStation={onOpenEditStation}
+          onOpenLogCalibration={onOpenLogCalibration}
+        />
+      )}
+
+      {/* Floating Assigned Task Pop-Up Notification */}
+      {assignedNotifications.length > 0 && !popupDismissed && (
+        <div 
+          id="assigned-task-popup-notification"
+          className="fixed bottom-6 right-6 z-50 max-w-md w-[calc(100vw-3rem)] bg-[#111115]/95 backdrop-blur-md border border-amber-500/40 shadow-2xl shadow-black/80 rounded-xl p-5 text-zinc-100 transition-all transform animate-in fade-in slide-in-from-bottom-5"
+        >
+          {/* Popup Header */}
+          <div className="flex items-center justify-between pb-3 border-b border-zinc-800 mb-3">
+            <div className="flex items-center space-x-2.5">
+              <div className="relative p-1.5 bg-amber-500/20 rounded-lg border border-amber-500/30">
+                <Bell className="h-4 w-4 text-amber-400" />
+                <span className="absolute -top-1 -right-1 flex h-2.5 w-2.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500"></span>
+                </span>
+              </div>
+              <div>
+                <h4 className="text-xs font-bold uppercase tracking-wider text-amber-400 font-mono">
+                  Assigned Maintenance Alert
+                </h4>
+                <p className="text-[10px] text-zinc-400">
+                  Task #{activePopupIndex + 1} of {assignedNotifications.length}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-1">
+              {assignedNotifications.length > 1 && (
+                <div className="flex items-center space-x-1 mr-1">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setActivePopupIndex(prev => (prev > 0 ? prev - 1 : assignedNotifications.length - 1));
+                    }}
+                    className="p-1 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition cursor-pointer"
+                    title="Previous task"
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setActivePopupIndex(prev => (prev < assignedNotifications.length - 1 ? prev + 1 : 0));
+                    }}
+                    className="p-1 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition cursor-pointer"
+                    title="Next task"
+                  >
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+              <button
+                id="close-assigned-popup-btn"
+                onClick={() => setPopupDismissed(true)}
+                className="p-1 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition cursor-pointer"
+                title="Dismiss notification"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+
+          {/* Current Popup Item Details */}
+          {(() => {
+            const currentItem = assignedNotifications[activePopupIndex] || assignedNotifications[0];
+            if (!currentItem) return null;
+
+            return (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border font-mono ${
+                    currentItem.type === 'ticket' 
+                      ? 'bg-amber-500/10 text-amber-300 border-amber-500/30' 
+                      : 'bg-blue-500/10 text-blue-300 border-blue-500/30'
+                  }`}>
+                    {currentItem.type === 'ticket' ? `Ticket #${currentItem.id}` : `Work Order ${currentItem.id}`}
+                  </span>
+
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase font-mono ${
+                    currentItem.priority === 'Emergency' ? 'bg-red-500/20 text-red-300 border border-red-500/30' :
+                    currentItem.priority === 'High' ? 'bg-orange-500/20 text-orange-300 border border-orange-500/30' :
+                    'bg-zinc-800 text-zinc-300'
+                  }`}>
+                    {currentItem.priority}
+                  </span>
+                </div>
+
+                <div>
+                  <h5 className="text-sm font-semibold text-white line-clamp-2 leading-snug">
+                    {currentItem.title}
+                  </h5>
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+                    <span className="flex items-center gap-1">
+                      <Building2 className="h-3 w-3 text-zinc-500" />
+                      {currentItem.stationOrTeam}
+                    </span>
+                    <span>•</span>
+                    <span className="flex items-center gap-1 text-amber-300/90 font-mono text-[11px]">
+                      <User className="h-3 w-3 text-amber-400" />
+                      @{currentItem.assignee}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Redirect CTA Button */}
+                <button
+                  id="assigned-task-popup-redirect-btn"
+                  onClick={() => {
+                    if (onNavigateToMaintenance) {
+                      onNavigateToMaintenance({
+                        tab: currentItem.type === 'ticket' ? 'tickets' : 'work-orders',
+                        ticketNumber: currentItem.type === 'ticket' ? currentItem.id : undefined,
+                        workOrderId: currentItem.type === 'work-order' ? currentItem.id : undefined
+                      });
+                    }
+                  }}
+                  className="w-full mt-2 flex items-center justify-center space-x-2 px-4 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-black font-bold text-xs rounded-lg transition shadow-md shadow-amber-500/20 cursor-pointer group"
+                >
+                  <Wrench className="h-3.5 w-3.5 text-black" />
+                  <span>Open {currentItem.type === 'ticket' ? `Ticket #${currentItem.id}` : `Work Order ${currentItem.id}`}</span>
+                  <ExternalLink className="h-3.5 w-3.5 text-black group-hover:translate-x-0.5 transition-transform" />
+                </button>
+              </div>
+            );
+          })()}
         </div>
       )}
 

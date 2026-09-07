@@ -12,6 +12,18 @@ export const users = pgTable('users', {
   username: text('username'),
   designation: text('designation'),
   office: text('office'),
+  status: text('status').default('Active'), // 'Active', 'Deactive', 'Invited', 'Pending'
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+// 1.2. Designations Table
+export const designations = pgTable('designations', {
+  id: serial('id').primaryKey(),
+  title: text('title').notNull().unique(), // e.g. "Senior Meteorologist"
+  code: text('code'), // e.g. "SR-MET"
+  department: text('department'), // e.g. "Meteorology Division"
+  description: text('description'),
+  status: text('status').default('Active'), // 'Active' or 'Inactive'
   createdAt: timestamp('created_at').defaultNow(),
 });
 
@@ -37,6 +49,11 @@ export const weatherStations = pgTable('weather_stations', {
   batteryCurrentVoltage: doublePrecision('battery_current_voltage'),
   stationType: text('station_type'),
   regionalOfficeId: integer('regional_office_id').references(() => regionalOffices.id, { onDelete: 'set null' }),
+  simNumber: text('sim_number'),
+  wigosSeries: text('wigos_series').default('1'),
+  wigosIssuer: text('wigos_issuer').default('0'),
+  wigosIssueNum: text('wigos_issue_num').default('20001'),
+  wigosLocalId: text('wigos_local_id'),
   createdAt: timestamp('created_at').defaultNow(),
 });
 
@@ -163,6 +180,7 @@ export const weatherStationsRelations = relations(weatherStations, ({ many }) =>
   sensors: many(sensorsInventory),
   deployments: many(sensorDeployments),
   replacements: many(sensorReplacements),
+  healthRecords: many(stationHealth),
 }));
 
 export const sensorsInventoryRelations = relations(sensorsInventory, ({ one, many }) => ({
@@ -524,6 +542,27 @@ export const installationProjectsRelations = relations(installationProjects, ({ 
     references: [weatherStations.stationId],
   }),
 }));
+
+// 23. Station Health Table
+export const stationHealth = pgTable('station_health', {
+  healthId: serial('health_id').primaryKey(),
+  stationId: integer('station_id')
+    .references(() => weatherStations.stationId, { onDelete: 'cascade' })
+    .notNull(),
+  lastReportedTime: timestamp('last_reported_time').defaultNow(),
+  batteryLevel: doublePrecision('battery_level').notNull(),
+  signalStrength: text('signal_strength').notNull(),
+  alertStatus: text('alert_status').notNull().default('OK'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const stationHealthRelations = relations(stationHealth, ({ one }) => ({
+  station: one(weatherStations, {
+    fields: [stationHealth.stationId],
+    references: [weatherStations.stationId],
+  }),
+}));
+
 
 
 
