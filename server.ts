@@ -25,7 +25,7 @@ async function startServer() {
   }
 
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   // Enable CORS for external domains, custom domains, and GitHub Pages deployments
   app.use((req, res, next) => {
