@@ -9,6 +9,7 @@ import { requireAuth, AuthRequest } from "./src/middleware/auth.ts";
 import { sendNotification, checkAndTriggerMonthlyReminders } from "./src/lib/notifications.ts";
 import { adminAuth } from "./src/lib/firebase-admin.ts";
 import { getOrCreateUser } from "./src/db/users.ts";
+import { hashPassword, verifyPassword, generateMetisToken, verifyMetisToken } from "./src/lib/auth-utils.ts";
 
 async function startServer() {
   // Ensure schema compatibility for sim_number and WIGOS Station Identifier structure
@@ -18,12 +19,24 @@ async function startServer() {
     await pool.query('ALTER TABLE weather_stations ADD COLUMN IF NOT EXISTS wigos_issuer TEXT DEFAULT \'0\';');
     await pool.query('ALTER TABLE weather_stations ADD COLUMN IF NOT EXISTS wigos_issue_num TEXT DEFAULT \'20001\';');
     await pool.query('ALTER TABLE weather_stations ADD COLUMN IF NOT EXISTS wigos_local_id TEXT;');
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;');
   } catch (e) {
     console.warn("Schema migration check:", e);
   }
 
   const app = express();
   const PORT = 3000;
+
+  // Enable CORS for external domains, custom domains, and GitHub Pages deployments
+  app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
+    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+    if (req.method === "OPTIONS") {
+      return res.sendStatus(200);
+    }
+    next();
+  });
 
   app.use(express.json());
 
@@ -703,6 +716,221 @@ async function startServer() {
     console.error("Failed to verify/update superadmin on startup:", err);
   }
 
+  // --- Authentication & First-Time Setup Endpoints ---
+
+  app.get("/api/auth/setup-status", async (req, res) => {
+    try {
+      const allUsers = await db.select().from(users);
+      const isFirstInstall = allUsers.length === 0;
+      res.json({
+        isFirstInstall,
+        userCount: allUsers.length,
+        systemName: "METIS - Nepal Meteorological Department",
+        installedAt: allUsers.length > 0 ? allUsers[0].createdAt : null
+      });
+    } catch (error: any) {
+      console.error("Failed to check setup status:", error);
+      res.status(500).json({ error: "Failed to determine system setup status", details: error?.message });
+    }
+  });
+
+  app.post("/api/auth/register", async (req, res) => {
+    const { email, password, username, phoneNumber, designation, office, role } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password are required." });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ error: "Password must be at least 6 characters long." });
+    }
+
+    try {
+      const cleanEmail = email.trim().toLowerCase();
+      const existing = await db.select().from(users);
+      const existingMatch = existing.find(u => u.email.toLowerCase() === cleanEmail);
+      if (existingMatch) {
+        if (!existingMatch.passwordHash) {
+          // Allow establishing initial password for account originally created without a native password
+          const hashedPassword = hashPassword(password);
+          const updated = await db.update(users).set({
+            passwordHash: hashedPassword,
+            username: username?.trim() || existingMatch.username,
+            phoneNumber: phoneNumber?.trim() || existingMatch.phoneNumber,
+            designation: designation?.trim() || existingMatch.designation,
+            office: office?.trim() || existingMatch.office,
+            role: cleanEmail === 'birajkdl@gmail.com' ? 'Super Administrator' : existingMatch.role
+          }).where(eq(users.uid, existingMatch.uid)).returning();
+
+          const activeUser = updated[0] || existingMatch;
+          const token = generateMetisToken({
+            uid: activeUser.uid,
+            email: activeUser.email,
+            role: activeUser.role || 'Super Administrator',
+            username: activeUser.username,
+            office: activeUser.office
+          });
+
+          await createAuditLog(
+            "Account Password Established",
+            cleanEmail,
+            activeUser.role || 'User',
+            `Native password credentials established for ${cleanEmail}.`
+          );
+
+          return res.status(200).json({
+            message: "Password credentials established successfully!",
+            token,
+            user: activeUser
+          });
+        }
+
+        return res.status(409).json({ error: "An account with this email address already exists. Please switch to Sign In." });
+      }
+
+      // If first user, or email matches the Super Admin email, bootstraps as Super Administrator!
+      const isFirstUser = existing.length === 0;
+      const assignedRole = (isFirstUser || cleanEmail === 'birajkdl@gmail.com') 
+        ? 'Super Administrator' 
+        : (role || 'Read-only/Audit User');
+
+      const hashedPassword = hashPassword(password);
+      const uid = 'metis_usr_' + crypto.randomUUID();
+
+      // Automatically determine assignedStationId if office provided
+      let assignedStationId: number | null = null;
+      if (office && typeof office === 'string') {
+        const officeLower = office.toLowerCase().trim();
+        if (!officeLower.includes("head") && !officeLower.includes("global") && !officeLower.includes("admin") && !officeLower.includes("super")) {
+          const stationsList = await db.select().from(weatherStations);
+          const matchedStation = stationsList.find(st => {
+            const nameLower = st.stationName.toLowerCase();
+            const regionLower = st.region.toLowerCase();
+            return nameLower.includes(officeLower) || officeLower.includes(nameLower) || regionLower.includes(officeLower) || officeLower.includes(regionLower);
+          });
+          if (matchedStation) assignedStationId = matchedStation.stationId;
+        }
+      }
+
+      const inserted = await db.insert(users).values({
+        uid,
+        email: cleanEmail,
+        passwordHash: hashedPassword,
+        username: username?.trim() || null,
+        phoneNumber: phoneNumber?.trim() || null,
+        designation: designation?.trim() || (isFirstUser ? 'Chief Administrator' : null),
+        office: office?.trim() || (isFirstUser ? 'Central Meteorological Department' : null),
+        role: assignedRole,
+        assignedStationId,
+        status: 'Active',
+      }).returning();
+
+      const createdUser = inserted[0];
+
+      // Also try to mirror user in Firebase Auth if available (non-blocking)
+      try {
+        await adminAuth.createUser({
+          uid,
+          email: cleanEmail,
+          password,
+          displayName: username?.trim() || undefined,
+          phoneNumber: phoneNumber?.trim() || undefined,
+        });
+      } catch (fbErr: any) {
+        // Firebase failure (e.g. offline, unauthorized domain) does NOT block local account creation!
+        console.log("Firebase sync during native registration notice:", fbErr.message);
+      }
+
+      // Generate Native METIS Token
+      const token = generateMetisToken({
+        uid: createdUser.uid,
+        email: createdUser.email,
+        role: createdUser.role || assignedRole,
+        username: createdUser.username,
+        office: createdUser.office
+      });
+
+      await createAuditLog(
+        isFirstUser ? "Initial System Administrator Setup" : "User Self-Registration",
+        cleanEmail,
+        assignedRole,
+        isFirstUser 
+          ? `First-time installation completed. Primary Super Administrator account created for ${cleanEmail}.` 
+          : `Self-registration completed for ${cleanEmail}.`
+      );
+
+      res.status(201).json({
+        message: "Account created successfully",
+        token,
+        user: createdUser,
+        isFirstInstall: isFirstUser
+      });
+    } catch (error: any) {
+      console.error("Registration error:", error);
+      res.status(500).json({ error: error.message || "Failed to create account" });
+    }
+  });
+
+  app.post("/api/auth/login", async (req, res) => {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password are required." });
+    }
+
+    try {
+      const cleanEmail = email.trim().toLowerCase();
+      const matchingUsers = await db.select().from(users).where(eq(users.email, cleanEmail));
+      if (matchingUsers.length === 0) {
+        return res.status(401).json({ error: "Invalid email or password credentials." });
+      }
+
+      const foundUser = matchingUsers[0];
+
+      if (foundUser.status && foundUser.status.toLowerCase() === 'deactive') {
+        return res.status(403).json({ error: "Your account is deactivated. Contact an administrator." });
+      }
+
+      let passwordValid = false;
+      if (foundUser.passwordHash) {
+        passwordValid = verifyPassword(password, foundUser.passwordHash);
+      }
+
+      // If user has no passwordHash (e.g. created through earlier legacy sign-in), save password on first entry if >= 6 chars
+      if (!passwordValid && !foundUser.passwordHash) {
+        if (password.length >= 6) {
+          const newHash = hashPassword(password);
+          await db.update(users).set({ passwordHash: newHash }).where(eq(users.uid, foundUser.uid));
+          passwordValid = true;
+        }
+      }
+
+      if (!passwordValid) {
+        return res.status(401).json({ error: "Invalid email or password credentials." });
+      }
+
+      const token = generateMetisToken({
+        uid: foundUser.uid,
+        email: foundUser.email,
+        role: foundUser.role || 'Read-only/Audit User',
+        username: foundUser.username,
+        office: foundUser.office
+      });
+
+      await createAuditLog(
+        "User Login",
+        cleanEmail,
+        foundUser.role || 'User',
+        `User logged in successfully via Native METIS authentication.`
+      );
+
+      res.json({
+        token,
+        user: foundUser
+      });
+    } catch (error: any) {
+      console.error("Login error:", error);
+      res.status(500).json({ error: "Authentication failed. Please try again." });
+    }
+  });
+
   // --- User and Role Management Endpoints ---
 
   app.get("/api/me", requireAuth, async (req: AuthRequest, res) => {
@@ -721,6 +949,10 @@ async function startServer() {
         return res.status(404).json({ error: "User profile not found in database session." });
       }
 
+      const currentUserRecords = await db.select().from(users).where(eq(users.uid, uid));
+      const currentUser = currentUserRecords[0];
+      const isSuperAdmin = currentUser?.role === 'Super Administrator' || currentUser?.email === 'birajkdl@gmail.com';
+
       // Automatically determine assignedStationId based on office
       let assignedStationId: number | null = null;
       if (office && typeof office === 'string') {
@@ -729,7 +961,6 @@ async function startServer() {
         if (!officeLower.includes("head") && !officeLower.includes("global") && !officeLower.includes("admin") && !officeLower.includes("super")) {
           // Fetch all stations
           const stationsList = await db.select().from(weatherStations);
-          // Try to find a match where the office text matches or is a substring of stationName or region (or vice versa)
           const matchedStation = stationsList.find(st => {
             const nameLower = st.stationName.toLowerCase();
             const regionLower = st.region.toLowerCase();
@@ -744,14 +975,17 @@ async function startServer() {
         }
       }
 
+      // Preserve Super Administrator role so initial setup user is NEVER demoted!
+      const finalRole = isSuperAdmin ? 'Super Administrator' : (role || currentUser?.role || 'Read-only/Audit User');
+
       const updated = await db.update(users)
         .set({
-          phoneNumber: phoneNumber || null,
-          username: username || null,
-          designation: designation || null,
-          office: office || null,
-          role: role || 'Read-only/Audit User',
-          assignedStationId: assignedStationId
+          phoneNumber: phoneNumber !== undefined ? phoneNumber : (currentUser?.phoneNumber || null),
+          username: username !== undefined ? username : (currentUser?.username || null),
+          designation: designation !== undefined ? designation : (currentUser?.designation || null),
+          office: office !== undefined ? office : (currentUser?.office || null),
+          role: finalRole,
+          assignedStationId: assignedStationId !== null ? assignedStationId : currentUser?.assignedStationId
         })
         .where(eq(users.uid, uid))
         .returning();

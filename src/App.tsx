@@ -114,6 +114,7 @@ export default function App() {
     assignedStationId: number | null;
   } | null>(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
+  const [isFirstInstall, setIsFirstInstall] = useState<boolean>(false);
 
   // Application Data States
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -385,20 +386,72 @@ export default function App() {
     }
   };
 
-  // 1. Listen to Firebase Auth state
+  // 1. Initial Setup Status & Stored Session Restoration
+  useEffect(() => {
+    // Check initial installation status
+    fetch('/api/auth/setup-status')
+      .then(res => res.json())
+      .then(data => {
+        if (data.isFirstInstall) {
+          setIsFirstInstall(true);
+          const savedToken = localStorage.getItem('metis_auth_token');
+          if (!savedToken) {
+            setIsAuthModalOpen(true);
+          }
+        }
+      })
+      .catch(err => console.log("Setup status check notice:", err));
+
+    // Restore saved session token (both native METIS tokens and Firebase tokens)
+    const savedToken = localStorage.getItem('metis_auth_token');
+    if (savedToken) {
+      setToken(savedToken);
+      fetch('/api/me', {
+        headers: {
+          'Authorization': `Bearer ${savedToken}`
+        }
+      })
+      .then(res => {
+        if (res.ok) return res.json();
+        throw new Error("Stored token expired or invalidated");
+      })
+      .then(data => {
+        if (data) {
+          setDbUser(data);
+          setUser({
+            email: data.email,
+            displayName: data.username || data.email.split('@')[0],
+            uid: data.userId
+          } as any);
+        }
+      })
+      .catch(err => {
+        console.warn("Session restore check note:", err);
+      });
+    }
+  }, []);
+
+  // 2. Listen to Firebase Auth state
   useEffect(() => {
     return onAuthStateChanged(auth, async (currentUser) => {
-      setUser(currentUser);
       if (currentUser) {
+        setUser(currentUser);
         try {
           const idToken = await currentUser.getIdToken();
           setToken(idToken);
+          localStorage.setItem('metis_auth_token', idToken);
+          localStorage.setItem('metis_user_email', currentUser.email || '');
         } catch (e) {
           console.error("Failed to fetch ID token:", e);
-          setToken(null);
         }
       } else {
-        setToken(null);
+        // Only clear if we don't have a native METIS token in localStorage
+        const savedToken = localStorage.getItem('metis_auth_token');
+        if (!savedToken || !savedToken.startsWith('metis.')) {
+          setToken(null);
+          setUser(null);
+          setDbUser(null);
+        }
       }
       setLoadingAuth(false);
     });
@@ -511,6 +564,11 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
+      localStorage.removeItem('metis_auth_token');
+      localStorage.removeItem('metis_user_email');
+      setToken(null);
+      setUser(null);
+      setDbUser(null);
       await signOut(auth);
     } catch (e) {
       console.error("Sign-out failed:", e);
@@ -706,6 +764,7 @@ export default function App() {
         toggleTheme={toggleTheme}
         isCollapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(true)}
+        isFirstInstall={isFirstInstall}
       />
 
       {/* Main Container */}
@@ -1187,8 +1246,27 @@ export default function App() {
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
         auth={auth}
+        isFirstInstall={isFirstInstall}
         onAuthSuccess={(t) => {
           setToken(t);
+          setIsFirstInstall(false);
+          fetch('/api/me', {
+            headers: {
+              'Authorization': `Bearer ${t}`
+            }
+          })
+          .then(res => res.ok ? res.json() : null)
+          .then(profile => {
+            if (profile) {
+              setDbUser(profile);
+              setUser({
+                email: profile.email,
+                displayName: profile.username || profile.email.split('@')[0],
+                uid: profile.userId
+              } as any);
+            }
+          })
+          .catch(e => console.warn("Failed to load profile after auth success:", e));
           fetchData();
         }}
       />

@@ -44,6 +44,7 @@ interface SidebarProps {
   toggleTheme: () => void;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
+  isFirstInstall?: boolean;
 }
 
 export default function Sidebar({
@@ -58,7 +59,8 @@ export default function Sidebar({
   theme,
   toggleTheme,
   isCollapsed,
-  onToggleCollapse
+  onToggleCollapse,
+  isFirstInstall
 }: SidebarProps) {
   return (
     <aside className={`transition-all duration-300 ease-in-out ${isCollapsed ? 'w-0 overflow-hidden border-r-0' : 'w-64'} bg-[#0a0a0c] text-[#d4d4d8] flex flex-col border-r border-[#1f1f23] shrink-0 h-screen sticky top-0`}>
@@ -418,19 +420,27 @@ export default function Sidebar({
           </div>
         ) : (
           <div className="space-y-3">
-            <div className="text-center p-2 rounded-md bg-[#0f0f12] border border-dashed border-[#1f1f23]">
-              <p className="text-[10px] text-zinc-400 font-medium font-mono">Read-Only Session</p>
-              <p className="text-[9px] text-zinc-500 mt-1">Unlock controls to configure terminals & logs.</p>
+            <div className={`text-center p-2 rounded-md ${isFirstInstall ? 'bg-amber-500/10 border border-amber-500/30' : 'bg-[#0f0f12] border border-dashed border-[#1f1f23]'}`}>
+              <p className={`text-[10px] font-medium font-mono ${isFirstInstall ? 'text-amber-400 font-bold' : 'text-zinc-400'}`}>
+                {isFirstInstall ? "⚡ First-Time Setup Required" : "Read-Only Session"}
+              </p>
+              <p className="text-[9px] text-zinc-500 mt-1">
+                {isFirstInstall ? "No accounts found. Create Primary Super Administrator." : "Unlock controls to configure terminals & logs."}
+              </p>
             </div>
             
             {/* Login button */}
             <button
               id="auth-login-btn"
               onClick={onLogin}
-              className="w-full flex items-center justify-center space-x-2 py-2.5 px-4 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-md text-xs tracking-wide transition-all duration-200 cursor-pointer shadow-md shadow-blue-600/20"
+              className={`w-full flex items-center justify-center space-x-2 py-2.5 px-4 font-semibold rounded-md text-xs tracking-wide transition-all duration-200 cursor-pointer shadow-md ${
+                isFirstInstall 
+                  ? 'bg-amber-600 hover:bg-amber-500 text-white shadow-amber-600/20'
+                  : 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-600/20'
+              }`}
             >
               <LogIn className="h-3.5 w-3.5 shrink-0" />
-              <span>Unlock Admin Controls</span>
+              <span>{isFirstInstall ? "Create Administrator" : "Unlock Admin Controls"}</span>
             </button>
           </div>
         )}

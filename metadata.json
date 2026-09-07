@@ -1,6 +1,6 @@
 {
-  "name": "Copy of Remix: METIS",
-  "description": "A full-stack management system for weather stations, sensors, and calibration tracking.",
+  "name": "METIS",
+  "description": "Nepal Meteorological Department - Meteorological Telemetry & Instrument Suite",
   "requestFramePermissions": [
     "camera"
   ],

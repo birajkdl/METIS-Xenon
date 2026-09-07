@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   X, 
   Mail, 
@@ -13,7 +13,9 @@ import {
   ArrowLeft,
   User,
   Briefcase,
-  Building
+  Building,
+  ShieldAlert,
+  Sparkles
 } from 'lucide-react';
 import { 
   signInWithEmailAndPassword, 
@@ -29,10 +31,12 @@ interface AuthModalProps {
   onClose: () => void;
   auth: Auth;
   onAuthSuccess: (token: string) => void;
+  isFirstInstall?: boolean;
 }
 
-export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: AuthModalProps) {
+export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess, isFirstInstall = false }: AuthModalProps) {
   const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
+  const [isFirstInstallActive, setIsFirstInstallActive] = useState<boolean>(isFirstInstall);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
@@ -46,6 +50,31 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  // Check setup status on mount or when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      fetch('/api/auth/setup-status')
+        .then(res => res.json())
+        .then(data => {
+          if (data.isFirstInstall || isFirstInstall) {
+            setIsFirstInstallActive(true);
+            setMode('register');
+            setSelectedRole('Super Administrator');
+            if (!designation) setDesignation('Chief Meteorological Administrator');
+            if (!office) setOffice('Head Office');
+          }
+        })
+        .catch(err => {
+          console.log("Setup status check note in modal:", err);
+          if (isFirstInstall) {
+            setIsFirstInstallActive(true);
+            setMode('register');
+            setSelectedRole('Super Administrator');
+          }
+        });
+    }
+  }, [isOpen, isFirstInstall]);
 
   let pendingTarget: any = null;
   try {
@@ -90,7 +119,7 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
           username: nameVal,
           designation: 'Google Authenticated Operator',
           office: 'Head Office',
-          role: 'Read-only/Audit User'
+          role: isFirstInstallActive ? 'Super Administrator' : 'Read-only/Audit User'
         })
       });
 
@@ -98,6 +127,8 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
         console.warn("Could not synchronize profiles with Postgres during Google Sign-in.");
       }
 
+      localStorage.setItem('metis_auth_token', token);
+      localStorage.setItem('metis_user_email', emailVal);
       onAuthSuccess(token);
       setSuccessMsg("Logged in successfully via Google!");
       
@@ -125,7 +156,9 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
       }, 1000);
     } catch (err: any) {
       console.error("Google Sign-In Error:", err);
-      if (err.code === 'auth/operation-not-allowed') {
+      if (err.code === 'auth/unauthorized-domain') {
+        setErrorMsg("Domain authorization error: Your current domain is not yet in Firebase's Authorized Domains. You can use standard Email/Password registration below, which works immediately in all environments.");
+      } else if (err.code === 'auth/operation-not-allowed') {
         setErrorMsg("Google Sign-In is disabled in your Firebase Console. Please enable 'Google' under the 'Sign-in method' tab in Firebase Authentication.");
       } else {
         setErrorMsg(err.message || "Google Authentication failed.");
@@ -141,7 +174,7 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
     setSuccessMsg(null);
   };
 
-  // 1. LOGIN SUBMIT
+  // 1. LOGIN SUBMIT (Supports Native METIS engine with seamless Firebase fallback)
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email || !password) {
@@ -153,65 +186,61 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
     setErrorMsg(null);
     setSuccessMsg(null);
 
-    try {
-      const userCredential = await signInWithEmailAndPassword(auth, email.trim(), password);
-      const token = await userCredential.user.getIdToken();
-      onAuthSuccess(token);
-      setSuccessMsg("Logged in successfully!");
+    const cleanEmail = email.trim().toLowerCase();
 
-      // Log successful login
-      try {
-        await fetch('/api/audit/logs', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            action: 'LOGIN_SUCCESS',
-            actorEmail: email.trim(),
-            details: 'User authenticated successfully via email and password.',
-            status: 'Success'
-          })
-        });
-      } catch (e) {
-        console.error("Failed to submit audit log for login success:", e);
+    // Attempt 1: Native METIS API login
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.token) {
+          localStorage.setItem('metis_auth_token', data.token);
+          localStorage.setItem('metis_user_email', cleanEmail);
+          onAuthSuccess(data.token);
+          setSuccessMsg("Logged in successfully! Loading operational clearances...");
+
+          setTimeout(() => {
+            onClose();
+            resetForm();
+          }, 800);
+          return;
+        }
+      } else if (res.status === 401 || res.status === 403) {
+        const errorData = await res.json().catch(() => ({}));
+        // If native explicitly returned 401/403, proceed to try Firebase as fallback
       }
+    } catch (nativeErr) {
+      console.warn("Native authentication server unreachable, falling back to Firebase:", nativeErr);
+    }
+
+    // Attempt 2: Firebase authentication fallback
+    try {
+      const userCredential = await signInWithEmailAndPassword(auth, cleanEmail, password);
+      const token = await userCredential.user.getIdToken();
+      localStorage.setItem('metis_auth_token', token);
+      localStorage.setItem('metis_user_email', cleanEmail);
+      onAuthSuccess(token);
+      setSuccessMsg("Logged in successfully via Firebase!");
 
       setTimeout(() => {
         onClose();
         resetForm();
-      }, 1000);
-    } catch (err: any) {
-      console.error("Login Error:", err);
-
-      // Log failed login
-      try {
-        await fetch('/api/audit/logs', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            action: 'LOGIN_FAILED',
-            actorEmail: email.trim() || 'Unknown',
-            actorRole: 'Guest',
-            details: `Failed login attempt. Reason: ${err.message || 'Invalid credentials'}.`,
-            status: 'Failed'
-          })
-        });
-      } catch (e) {
-        console.error("Failed to submit audit log for login failure:", e);
-      }
-
-      if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password') {
-        setErrorMsg("Invalid email or password credentials.");
-      } else if (err.code === 'auth/invalid-email') {
+      }, 800);
+    } catch (fbErr: any) {
+      console.error("Login Error (Both Native & Firebase failed):", fbErr);
+      if (fbErr.code === 'auth/user-not-found' || fbErr.code === 'auth/wrong-password' || fbErr.code === 'auth/invalid-credential') {
+        setErrorMsg("Invalid email or password credentials. If you haven't created an account yet, click Register above.");
+      } else if (fbErr.code === 'auth/unauthorized-domain') {
+        setErrorMsg("Notice: This domain is not authorized in Firebase. Use native registration or ensure the backend server is reachable.");
+      } else if (fbErr.code === 'auth/invalid-email') {
         setErrorMsg("Please enter a valid email address.");
-      } else if (err.code === 'auth/operation-not-allowed') {
-        setErrorMsg("Email/Password authentication is disabled in your Firebase Console. Please go to the Firebase Console -> Build -> Authentication -> Sign-in method, and enable 'Email/Password' to register or log in.");
       } else {
-        setErrorMsg(err.message || "Authentication failed.");
+        setErrorMsg(fbErr.message || "Authentication failed. Please verify your credentials.");
       }
     } finally {
       setIsLoading(false);
@@ -237,7 +266,6 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
       setErrorMsg("Phone number is mandatory.");
       return;
     }
-    // simple phone pattern validation
     const cleanPhone = phoneNumber.replace(/\s+/g, '');
     if (cleanPhone.length < 7) {
       setErrorMsg("Please enter a valid, complete phone number.");
@@ -249,10 +277,6 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
     }
     if (!office.trim()) {
       setErrorMsg("Office is mandatory.");
-      return;
-    }
-    if (!selectedRole) {
-      setErrorMsg("User access role is mandatory.");
       return;
     }
     if (!password) {
@@ -268,52 +292,107 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
       return;
     }
 
+    const cleanEmail = email.trim().toLowerCase();
+    const effectiveRole = isFirstInstallActive ? 'Super Administrator' : selectedRole;
+
     setIsLoading(true);
 
+    // Primary: Call METIS Native Registration endpoint
     try {
-      // Create user inside Firebase
-      const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
-      const token = await userCredential.user.getIdToken();
-
-      // Immediately sync all mandatory details to the PostgreSQL user database
-      const response = await fetch('/api/me', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
+      const regRes = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          phoneNumber: cleanPhone,
+          email: cleanEmail,
+          password,
           username: username.trim(),
+          phoneNumber: cleanPhone,
           designation: designation.trim(),
           office: office.trim(),
-          role: selectedRole
+          role: effectiveRole
         })
       });
 
-      if (!response.ok) {
-        console.warn("Could not synchronize profiles with Postgres during registration.");
+      if (regRes.ok) {
+        const regData = await regRes.json();
+        const activeToken = regData.token;
+        localStorage.setItem('metis_auth_token', activeToken);
+        localStorage.setItem('metis_user_email', cleanEmail);
+        onAuthSuccess(activeToken);
+
+        // Attempt background Firebase user creation (non-blocking)
+        createUserWithEmailAndPassword(auth, cleanEmail, password).catch(fbErr => {
+          console.log("Firebase background sync notice:", fbErr.message);
+        });
+
+        setSuccessMsg(isFirstInstallActive 
+          ? "🎉 Super Administrator account established! Initializing full operational clearances..."
+          : "Account registered successfully! Access granted.");
+
+        setTimeout(() => {
+          onClose();
+          resetForm();
+        }, 1500);
+        return;
+      } else {
+        const errData = await regRes.json().catch(() => ({}));
+        if (regRes.status === 409) {
+          setErrorMsg("An account with this email address already exists. Please switch to Sign In.");
+          setIsLoading(false);
+          return;
+        } else if (errData.error) {
+          setErrorMsg(errData.error);
+          setIsLoading(false);
+          return;
+        }
+      }
+    } catch (networkErr) {
+      console.warn("Native registration network error, attempting Firebase direct registration:", networkErr);
+    }
+
+    // Fallback: Direct Firebase registration if backend was unreachable
+    try {
+      const userCredential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+      const token = await userCredential.user.getIdToken();
+
+      // Sync details to Postgres
+      try {
+        await fetch('/api/me', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            phoneNumber: cleanPhone,
+            username: username.trim(),
+            designation: designation.trim(),
+            office: office.trim(),
+            role: effectiveRole
+          })
+        });
+      } catch (e) {
+        console.warn("Could not sync profile during Firebase fallback:", e);
       }
 
+      localStorage.setItem('metis_auth_token', token);
+      localStorage.setItem('metis_user_email', cleanEmail);
       onAuthSuccess(token);
-      setSuccessMsg("Account registered successfully! Synchronizing system access clearances based on meteorological office...");
+      setSuccessMsg("Account registered successfully! Initializing access...");
       setTimeout(() => {
         onClose();
         resetForm();
       }, 1500);
-
-    } catch (err: any) {
-      console.error("Registration Error:", err);
-      if (err.code === 'auth/email-already-in-use') {
-        setErrorMsg("This email is already registered.");
-      } else if (err.code === 'auth/invalid-email') {
-        setErrorMsg("Invalid email address format.");
-      } else if (err.code === 'auth/weak-password') {
+    } catch (fbErr: any) {
+      console.error("Registration Error (Firebase fallback):", fbErr);
+      if (fbErr.code === 'auth/email-already-in-use') {
+        setErrorMsg("This email is already registered. Please switch to Sign In.");
+      } else if (fbErr.code === 'auth/unauthorized-domain') {
+        setErrorMsg("Firebase Domain Authorization Error: Your domain is not authorized in Firebase. Please ensure the METIS backend is running so native authentication can handle requests.");
+      } else if (fbErr.code === 'auth/weak-password') {
         setErrorMsg("Password is too weak. Please use at least 6 characters.");
-      } else if (err.code === 'auth/operation-not-allowed') {
-        setErrorMsg("Email/Password registration is disabled in your Firebase Console. Please go to the Firebase Console -> Build -> Authentication -> Sign-in method, and enable 'Email/Password' to register or log in.");
       } else {
-        setErrorMsg(err.message || "Failed to compile registration credentials.");
+        setErrorMsg(fbErr.message || "Failed to complete registration.");
       }
     } finally {
       setIsLoading(false);
@@ -357,7 +436,7 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
         className="w-full max-w-md bg-[#0c0c0f] border border-[#1f1f23] rounded-2xl shadow-2xl overflow-hidden text-zinc-300 relative"
       >
         {/* Header decoration */}
-        <div className="h-1 bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600"></div>
+        <div className={`h-1.5 ${isFirstInstallActive ? 'bg-gradient-to-r from-amber-500 via-orange-500 to-blue-600' : 'bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600'}`}></div>
 
         {/* Close Button */}
         <button
@@ -368,21 +447,54 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
           <X className="h-4 w-4" />
         </button>
 
-        <div className="p-8 space-y-6">
+        <div className="p-8 space-y-5">
           {/* Logo / Brand Header */}
           <div className="text-center space-y-2">
-            <div className="mx-auto w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
-              <KeyRound className="h-5 w-5 animate-pulse" />
+            <div className={`mx-auto w-11 h-11 rounded-xl flex items-center justify-center ${
+              isFirstInstallActive 
+                ? 'bg-amber-500/10 border border-amber-500/30 text-amber-400' 
+                : 'bg-blue-500/10 border border-blue-500/20 text-blue-400'
+            }`}>
+              {isFirstInstallActive ? (
+                <Sparkles className="h-6 w-6 animate-pulse" />
+              ) : (
+                <KeyRound className="h-5 w-5 animate-pulse" />
+              )}
             </div>
             <div>
               <h2 className="text-xl font-serif text-white tracking-wide">
-                {mode === 'login' ? "Secure Authentication" : mode === 'register' ? "Operator Registration" : "Reset Clearance Link"}
+                {isFirstInstallActive 
+                  ? "Initial System Setup"
+                  : mode === 'login' 
+                    ? "Secure Authentication" 
+                    : mode === 'register' 
+                      ? "Operator Registration" 
+                      : "Reset Password Link"
+                }
               </h2>
-              <p className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 mt-1">
-                {mode === 'login' ? "METIS ASSET GRID LOCK" : mode === 'register' ? "REGISTER METIS PROFILE" : "FORGOT CREDENTIALS DISPATCH"}
+              <p className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 mt-1">
+                {isFirstInstallActive
+                  ? "CREATE PRIMARY SUPER ADMINISTRATOR"
+                  : mode === 'login' 
+                    ? "METIS ASSET GRID ACCESS" 
+                    : mode === 'register' 
+                      ? "CREATE METIS OPERATOR PROFILE" 
+                      : "CREDENTIAL RECOVERY DISPATCH"
+                }
               </p>
             </div>
           </div>
+
+          {/* First-Time Setup Welcome Banner */}
+          {isFirstInstallActive && (
+            <div id="first-install-modal-alert" className="p-3.5 bg-gradient-to-r from-amber-500/10 to-blue-500/10 border border-amber-500/30 rounded-xl flex items-start space-x-2.5 text-xs">
+              <ShieldAlert className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
+              <div className="text-zinc-200 leading-snug">
+                <span className="font-bold text-amber-300 block mb-1">Welcome to METIS First-Time Setup</span>
+                No accounts currently exist. Register below to establish the <strong>Primary Super Administrator</strong> account. This will grant you full authority over stations, sensors, calibrations, and user permissions.
+              </div>
+            </div>
+          )}
 
           {/* Pending Deep Link Target Banner */}
           {pendingTarget && (
@@ -390,13 +502,13 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
               <AlertCircle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
               <div className="text-amber-200/90 leading-snug">
                 <span className="font-bold text-amber-300 block mb-0.5">Authentication Required for Access</span>
-                You are accessing <span className="font-mono font-bold text-white uppercase">{pendingTarget.ticketNumber ? `Ticket #${pendingTarget.ticketNumber}` : pendingTarget.workOrderId ? `Work Order ${pendingTarget.workOrderId}` : 'Maintenance Task'}</span> via direct email link. Please sign in or register to be redirected straight to your assigned item.
+                You are accessing <span className="font-mono font-bold text-white uppercase">{pendingTarget.ticketNumber ? `Ticket #${pendingTarget.ticketNumber}` : pendingTarget.workOrderId ? `Work Order ${pendingTarget.workOrderId}` : 'Maintenance Task'}</span> via direct email link. Please sign in or register to proceed.
               </div>
             </div>
           )}
 
           {/* Tab buttons for Login / Register */}
-          {mode !== 'forgot' && (
+          {mode !== 'forgot' && !isFirstInstallActive && (
             <div className="flex bg-[#07070a] p-1 rounded-lg border border-[#17171d] text-xs">
               <button
                 id="tab-auth-login"
@@ -436,7 +548,7 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
           )}
 
           {/* FORM: LOGIN */}
-          {mode === 'login' && (
+          {mode === 'login' && !isFirstInstallActive && (
             <form onSubmit={handleLoginSubmit} className="space-y-4">
               <div className="space-y-1.5">
                 <label className="text-[11px] font-mono uppercase tracking-wider text-zinc-400">Email Address (Username)</label>
@@ -446,7 +558,7 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
                     id="login-email"
                     type="email"
                     required
-                    placeholder="operator@metis.gov"
+                    placeholder="operator@metis.gov.np"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     className="w-full pl-9 pr-4 py-2.5 bg-[#07070a] border border-[#232329] rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-hidden focus:border-blue-500"
@@ -458,10 +570,10 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
                 <div className="flex justify-between items-center">
                   <label className="text-[11px] font-mono uppercase tracking-wider text-zinc-400">Password</label>
                   <button
-                    id="login-forgot-password-link"
+                    id="link-forgot-password"
                     type="button"
                     onClick={() => handleToggleMode('forgot')}
-                    className="text-[10px] text-blue-400 hover:text-blue-300 font-mono tracking-wide focus:outline-hidden cursor-pointer"
+                    className="text-[11px] text-blue-400 hover:text-blue-300 cursor-pointer"
                   >
                     Forgot Password?
                   </button>
@@ -484,26 +596,26 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
                 id="login-submit-btn"
                 type="submit"
                 disabled={isLoading}
-                className="w-full flex items-center justify-center space-x-2 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg text-xs tracking-wider uppercase font-mono cursor-pointer disabled:opacity-50 transition-all shadow-lg shadow-blue-600/15 mt-2"
+                className="w-full flex items-center justify-center space-x-2 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg text-xs tracking-wider uppercase font-mono cursor-pointer disabled:opacity-50 transition-all shadow-lg shadow-blue-600/15"
               >
                 {isLoading ? (
                   <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin"></div>
                 ) : (
                   <>
                     <LogIn className="h-4 w-4" />
-                    <span>Authenticate</span>
+                    <span>Sign In</span>
                   </>
                 )}
               </button>
             </form>
           )}
 
-          {/* FORM: REGISTER (Mandatory Email, Phone, Username, Designation, Office, Role, Password) */}
-          {mode === 'register' && (
-            <form onSubmit={handleRegisterSubmit} className="space-y-4 max-h-[420px] overflow-y-auto pr-1">
+          {/* FORM: REGISTER */}
+          {(mode === 'register' || isFirstInstallActive) && (
+            <form onSubmit={handleRegisterSubmit} className="space-y-3.5 max-h-[440px] overflow-y-auto pr-1">
               <div className="space-y-1.5">
                 <label className="text-[11px] font-mono uppercase tracking-wider text-zinc-400">
-                  Username <span className="text-red-500 font-bold">*</span>
+                  Full Name / Username <span className="text-red-500 font-bold">*</span>
                 </label>
                 <div className="relative">
                   <User className="absolute left-3 top-3 h-4 w-4 text-zinc-500" />
@@ -511,10 +623,10 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
                     id="register-username"
                     type="text"
                     required
-                    placeholder="e.g. jdoe"
+                    placeholder="e.g. Biraj Kandel"
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
-                    className="w-full pl-9 pr-4 py-2.5 bg-[#07070a] border border-[#232329] rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-hidden focus:border-blue-500"
+                    className="w-full pl-9 pr-4 py-2 bg-[#07070a] border border-[#232329] rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-hidden focus:border-blue-500"
                   />
                 </div>
               </div>
@@ -529,17 +641,17 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
                     id="register-email"
                     type="email"
                     required
-                    placeholder="operator@metis.gov"
+                    placeholder="birajkdl@gmail.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    className="w-full pl-9 pr-4 py-2.5 bg-[#07070a] border border-[#232329] rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-hidden focus:border-blue-500"
+                    className="w-full pl-9 pr-4 py-2 bg-[#07070a] border border-[#232329] rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-hidden focus:border-blue-500"
                   />
                 </div>
               </div>
 
               <div className="space-y-1.5">
                 <label className="text-[11px] font-mono uppercase tracking-wider text-zinc-400">
-                  Phone Number <span className="text-red-500 font-bold">*</span>
+                  Mobile Phone Number <span className="text-red-500 font-bold">*</span>
                 </label>
                 <div className="relative">
                   <Phone className="absolute left-3 top-3 h-4 w-4 text-zinc-500" />
@@ -547,10 +659,10 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
                     id="register-phone"
                     type="tel"
                     required
-                    placeholder="+254 712 345678"
+                    placeholder="+977 9800000000"
                     value={phoneNumber}
                     onChange={(e) => setPhoneNumber(e.target.value)}
-                    className="w-full pl-9 pr-4 py-2.5 bg-[#07070a] border border-[#232329] rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-hidden focus:border-blue-500"
+                    className="w-full pl-9 pr-4 py-2 bg-[#07070a] border border-[#232329] rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-hidden focus:border-blue-500"
                   />
                 </div>
               </div>
@@ -565,10 +677,10 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
                     id="register-designation"
                     type="text"
                     required
-                    placeholder="e.g. Senior Meteorologist"
+                    placeholder="e.g. Chief Administrator / Senior Meteorologist"
                     value={designation}
                     onChange={(e) => setDesignation(e.target.value)}
-                    className="w-full pl-9 pr-4 py-2.5 bg-[#07070a] border border-[#232329] rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-hidden focus:border-blue-500"
+                    className="w-full pl-9 pr-4 py-2 bg-[#07070a] border border-[#232329] rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-hidden focus:border-blue-500"
                   />
                 </div>
               </div>
@@ -584,7 +696,7 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
                     required
                     value={office}
                     onChange={(e) => setOffice(e.target.value)}
-                    className="w-full pl-9 pr-4 py-2.5 bg-[#07070a] border border-[#232329] rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-hidden focus:border-blue-500 cursor-pointer"
+                    className="w-full pl-9 pr-4 py-2 bg-[#07070a] border border-[#232329] rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-hidden focus:border-blue-500 cursor-pointer"
                   >
                     <option value="" disabled>Select Meteorological Office</option>
                     <option value="Head Office">Head Office (Universal Station Access)</option>
@@ -597,32 +709,39 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
                     <option value="Janakpur AWS">Janakpur AWS (Madhesh Province)</option>
                   </select>
                 </div>
-                <p className="text-[9px] text-zinc-500 font-mono leading-tight">Selecting a specific office automatically defines your target meteorological station access.</p>
               </div>
 
+              {/* Role Display or Selection */}
               <div className="space-y-1.5">
                 <label className="text-[11px] font-mono uppercase tracking-wider text-zinc-400">
-                  Select User Role <span className="text-red-500 font-bold">*</span>
+                  User Role Clearance <span className="text-red-500 font-bold">*</span>
                 </label>
                 <div className="relative">
                   <Lock className="absolute left-3 top-3 h-4 w-4 text-zinc-500" />
-                  <select
-                    id="register-role"
-                    required
-                    value={selectedRole}
-                    onChange={(e) => setSelectedRole(e.target.value)}
-                    className="w-full pl-9 pr-4 py-2.5 bg-[#07070a] border border-[#232329] rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-hidden focus:border-blue-500 cursor-pointer"
-                  >
-                    <option value="Super Administrator">Super Administrator</option>
-                    <option value="Head Office Admin/User">Head Office Admin/User</option>
-                    <option value="Regional Office Admin/User">Regional Office Admin/User</option>
-                    <option value="Synoptic/Aero-synoptic office User">Synoptic/Aero-synoptic office User</option>
-                    <option value="Station User (optional)">Station User (optional)</option>
-                    <option value="Technician">Technician</option>
-                    <option value="Authorized Signatory">Authorized Signatory</option>
-                    <option value="Read-only/Audit User">Read-only/Audit User</option>
-                    <option value="Supplier account">Supplier account</option>
-                  </select>
+                  {isFirstInstallActive ? (
+                    <div className="w-full pl-9 pr-4 py-2 bg-amber-500/10 border border-amber-500/40 rounded-lg text-xs text-amber-300 font-semibold flex items-center justify-between">
+                      <span>Super Administrator (Primary Account)</span>
+                      <span className="text-[9px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 font-mono uppercase">Full Access</span>
+                    </div>
+                  ) : (
+                    <select
+                      id="register-role"
+                      required
+                      value={selectedRole}
+                      onChange={(e) => setSelectedRole(e.target.value)}
+                      className="w-full pl-9 pr-4 py-2 bg-[#07070a] border border-[#232329] rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-hidden focus:border-blue-500 cursor-pointer"
+                    >
+                      <option value="Super Administrator">Super Administrator</option>
+                      <option value="Head Office Admin/User">Head Office Admin/User</option>
+                      <option value="Regional Office Admin/User">Regional Office Admin/User</option>
+                      <option value="Synoptic/Aero-synoptic office User">Synoptic/Aero-synoptic office User</option>
+                      <option value="Station User (optional)">Station User (optional)</option>
+                      <option value="Technician">Technician</option>
+                      <option value="Authorized Signatory">Authorized Signatory</option>
+                      <option value="Read-only/Audit User">Read-only/Audit User</option>
+                      <option value="Supplier account">Supplier account</option>
+                    </select>
+                  )}
                 </div>
               </div>
 
@@ -639,7 +758,7 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
                     placeholder="•••••••• (Min 6 characters)"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="w-full pl-9 pr-4 py-2.5 bg-[#07070a] border border-[#232329] rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-hidden focus:border-blue-500"
+                    className="w-full pl-9 pr-4 py-2 bg-[#07070a] border border-[#232329] rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-hidden focus:border-blue-500"
                   />
                 </div>
               </div>
@@ -657,7 +776,7 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
                     placeholder="••••••••"
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
-                    className="w-full pl-9 pr-4 py-2.5 bg-[#07070a] border border-[#232329] rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-hidden focus:border-blue-500"
+                    className="w-full pl-9 pr-4 py-2 bg-[#07070a] border border-[#232329] rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-hidden focus:border-blue-500"
                   />
                 </div>
               </div>
@@ -666,14 +785,18 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
                 id="register-submit-btn"
                 type="submit"
                 disabled={isLoading}
-                className="w-full flex items-center justify-center space-x-2 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg text-xs tracking-wider uppercase font-mono cursor-pointer disabled:opacity-50 transition-all shadow-lg shadow-blue-600/15 mt-2"
+                className={`w-full flex items-center justify-center space-x-2 py-2.5 font-semibold rounded-lg text-xs tracking-wider uppercase font-mono cursor-pointer disabled:opacity-50 transition-all shadow-lg mt-3 ${
+                  isFirstInstallActive 
+                    ? 'bg-amber-600 hover:bg-amber-500 text-white shadow-amber-600/20' 
+                    : 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-600/15'
+                }`}
               >
                 {isLoading ? (
                   <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin"></div>
                 ) : (
                   <>
                     <UserPlus className="h-4 w-4" />
-                    <span>Create Credentials</span>
+                    <span>{isFirstInstallActive ? "Establish Super Administrator Account" : "Create Account"}</span>
                   </>
                 )}
               </button>
@@ -681,11 +804,11 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
           )}
 
           {/* Third-party Sign-In providers section */}
-          {(mode === 'login' || mode === 'register') && (
-            <div className="mt-4 pt-4 border-t border-[#1f1f23]">
-              <div className="relative flex py-2 items-center">
+          {(mode === 'login' || mode === 'register') && !isFirstInstallActive && (
+            <div className="mt-4 pt-3 border-t border-[#1f1f23]">
+              <div className="relative flex py-1 items-center">
                 <div className="flex-grow border-t border-white/[0.03]"></div>
-                <span className="flex-shrink mx-3 text-[10px] font-mono text-zinc-500 uppercase tracking-wider">Alternative Access Method</span>
+                <span className="flex-shrink mx-3 text-[10px] font-mono text-zinc-500 uppercase tracking-wider">Alternative Access</span>
                 <div className="flex-grow border-t border-white/[0.03]"></div>
               </div>
               
@@ -694,7 +817,7 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
                 type="button"
                 onClick={handleGoogleSignIn}
                 disabled={isLoading}
-                className="w-full flex items-center justify-center space-x-2.5 py-2.5 bg-[#0f0f13] hover:bg-[#15151c] text-zinc-200 border border-[#232329] hover:border-zinc-700 font-semibold rounded-lg text-xs cursor-pointer disabled:opacity-50 transition-all mt-2"
+                className="w-full flex items-center justify-center space-x-2.5 py-2 bg-[#0f0f13] hover:bg-[#15151c] text-zinc-200 border border-[#232329] hover:border-zinc-700 font-semibold rounded-lg text-xs cursor-pointer disabled:opacity-50 transition-all mt-1"
               >
                 <svg className="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
@@ -724,7 +847,7 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess }: Auth
                       id="forgot-email"
                       type="email"
                       required
-                      placeholder="operator@metis.gov"
+                      placeholder="operator@metis.gov.np"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       className="w-full pl-9 pr-4 py-2.5 bg-[#07070a] border border-[#232329] rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-hidden focus:border-blue-500"
