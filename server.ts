@@ -10,7 +10,7 @@ import { requireAuth, AuthRequest } from "./src/middleware/auth.ts";
 import { sendNotification, checkAndTriggerMonthlyReminders } from "./src/lib/notifications.ts";
 import { adminAuth } from "./src/lib/firebase-admin.ts";
 import { getOrCreateUser } from "./src/db/users.ts";
-import { hashPassword, verifyPassword, generateMetisToken, verifyMetisToken } from "./src/lib/auth-utils.ts";
+import { hashPassword, verifyPassword, generateMetisToken, verifyMetisToken, toE164 } from "./src/lib/auth-utils.ts";
 
 async function startServer() {
   // Ensure schema compatibility for sim_number and WIGOS Station Identifier structure
@@ -828,15 +828,16 @@ async function startServer() {
 
       // Also try to mirror user in Firebase Auth if available (non-blocking)
       try {
+        const e164Phone = toE164(phoneNumber);
         await adminAuth.createUser({
           uid,
           email: cleanEmail,
           password,
           displayName: username?.trim() || undefined,
-          phoneNumber: phoneNumber?.trim() || undefined,
+          phoneNumber: e164Phone,
         });
       } catch (fbErr: any) {
-        // Firebase failure (e.g. offline, unauthorized domain) does NOT block local account creation!
+        // Firebase failure (e.g. offline, ADC project API disabled, unauthorized domain) does NOT block local account creation!
         console.log("Firebase sync during native registration notice:", fbErr.message);
       }
 
@@ -1097,24 +1098,46 @@ async function startServer() {
     }
 
     try {
-      // 1. Create in Firebase Auth
-      const firebaseUser = await adminAuth.createUser({
-        email,
-        password,
-        displayName: username || null,
-        phoneNumber: phoneNumber || undefined,
-      });
+      const cleanEmail = email.trim().toLowerCase();
 
-      // 2. Insert into local users table
+      // Check if user already exists
+      const existing = await db.select().from(users).where(eq(users.email, cleanEmail));
+      if (existing.length > 0) {
+        return res.status(409).json({ error: `An account with email "${cleanEmail}" already exists.` });
+      }
+
+      let uid = 'metis_usr_' + crypto.randomUUID();
+      const e164Phone = toE164(phoneNumber);
+
+      // Attempt creation in Firebase Auth (gracefully non-blocking)
+      try {
+        const firebaseUser = await adminAuth.createUser({
+          email: cleanEmail,
+          password,
+          displayName: username?.trim() || undefined,
+          phoneNumber: e164Phone,
+        });
+        if (firebaseUser && firebaseUser.uid) {
+          uid = firebaseUser.uid;
+        }
+      } catch (fbErr: any) {
+        // Note: In Cloud Run containers without a custom service account, Identity Toolkit API may be disabled or return 403.
+        // We gracefully proceed with native METIS authentication so user creation is 100% reliable.
+        console.warn("Notice: Firebase Admin user creation skipped, creating native account:", fbErr.message);
+      }
+
+      // 2. Hash password and insert into local users table
+      const hashedPassword = hashPassword(password);
       const newUser = await db.insert(users)
         .values({
-          uid: firebaseUser.uid,
-          email: email.toLowerCase(),
-          phoneNumber: phoneNumber || null,
+          uid,
+          email: cleanEmail,
+          phoneNumber: phoneNumber?.trim() || null,
+          passwordHash: hashedPassword,
           role: role || 'Read-only/Audit User',
-          username: username || null,
-          designation: designation || null,
-          office: office || null,
+          username: username?.trim() || null,
+          designation: designation?.trim() || null,
+          office: office?.trim() || null,
           status: status || 'Active',
           assignedStationId: assignedStationId ? parseInt(assignedStationId) : null,
         })
@@ -1124,7 +1147,7 @@ async function startServer() {
         "Create User Account",
         req.dbUser?.email || "Unknown",
         callerRole,
-        `Created new operator login ${email} with role '${role || 'Read-only/Audit User'}'`
+        `Created new operator login ${cleanEmail} with role '${role || 'Read-only/Audit User'}'`
       );
 
       res.status(201).json(newUser[0]);
@@ -4350,16 +4373,24 @@ async function startServer() {
       
       const authHeader = req.headers.authorization;
       if (authHeader && authHeader.startsWith('Bearer ')) {
-        const token = authHeader.split('Bearer ')[1];
-        try {
-          const decodedToken = await adminAuth.verifyIdToken(token);
-          const dbUser = await getOrCreateUser(decodedToken.uid, decodedToken.email || '');
-          if (dbUser) {
-            email = dbUser.email;
-            role = dbUser.role || 'Read-only/Audit User';
+        const token = authHeader.split('Bearer ')[1].trim();
+        if (token.startsWith('metis.')) {
+          const payload = verifyMetisToken(token);
+          if (payload) {
+            email = payload.email || email;
+            role = payload.role || role;
           }
-        } catch (e) {
-          // ignore
+        } else {
+          try {
+            const decodedToken = await adminAuth.verifyIdToken(token);
+            const dbUser = await getOrCreateUser(decodedToken.uid, decodedToken.email || '');
+            if (dbUser) {
+              email = dbUser.email;
+              role = dbUser.role || 'Read-only/Audit User';
+            }
+          } catch (e) {
+            // ignore non-critical verification failure in optional audit metadata
+          }
         }
       }
       

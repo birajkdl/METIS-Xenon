@@ -23,6 +23,20 @@ export async function getOrCreateUser(uid: string, email: string) {
       return existingUser;
     }
 
+    // If matching user exists by email, link UID
+    const existingByEmail = existingUsers.find(u => u.email.toLowerCase() === email.toLowerCase());
+    if (existingByEmail) {
+      const updated = await db.update(users)
+        .set({
+          uid,
+          email,
+          ...(email.toLowerCase() === 'birajkdl@gmail.com' ? { role: 'Super Administrator' } : {})
+        })
+        .where(eq(users.id, existingByEmail.id))
+        .returning();
+      return updated[0];
+    }
+
     // If first user, or email matches the Super Admin email, bootstraps as Super Admin
     let role = 'Read-only/Audit User';
     if (existingUsers.length === 0 || email === 'birajkdl@gmail.com') {

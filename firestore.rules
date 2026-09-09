@@ -1,0 +1,194 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && (
+        request.auth.token.email_verified == true ||
+        request.auth.token.firebase.sign_in_provider == 'password' ||
+        request.auth.token.firebase.sign_in_provider == 'google.com'
+      );
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'birajkdl@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Entity validation helpers
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'email', 'role']) &&
+        data.uid is string && data.uid.size() <= 128 &&
+        data.email is string && data.email.size() <= 256 &&
+        data.role is string && (
+          data.role == 'Super Administrator' ||
+          data.role == 'Administrator' ||
+          data.role == 'Meteorologist' ||
+          data.role == 'Technician' ||
+          data.role == 'Viewer'
+        ) &&
+        (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 128)) &&
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 1024)) &&
+        (!('office' in data) || (data.office is string && data.office.size() <= 128)) &&
+        (!('lastLoginAt' in data) || (data.lastLoginAt is string && data.lastLoginAt.size() <= 64)) &&
+        (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64)) &&
+        (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
+    }
+
+    function isValidUserPreference(data) {
+      return data.keys().hasAll(['userId']) &&
+        data.userId is string && data.userId.size() <= 128 &&
+        (!('theme' in data) || (data.theme in ['light', 'dark', 'system'])) &&
+        (!('autoRefresh' in data) || data.autoRefresh is bool) &&
+        (!('pinnedStationIds' in data) || (data.pinnedStationIds is list && data.pinnedStationIds.size() <= 100)) &&
+        (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
+    }
+
+    function isValidUserActivity(data) {
+      return data.keys().hasAll(['id', 'userId', 'action', 'timestamp']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.userId is string && data.userId.size() <= 128 &&
+        data.action is string && data.action.size() <= 100 &&
+        (!('details' in data) || (data.details is string && data.details.size() <= 1000)) &&
+        data.timestamp is string && data.timestamp.size() <= 64;
+    }
+
+    function isValidMaintenanceTicket(data) {
+      return data.keys().hasAll(['ticketNumber', 'stationId', 'stationName', 'summary', 'status']) &&
+        data.ticketNumber is string && data.ticketNumber.size() <= 64 &&
+        data.stationId is number &&
+        data.stationName is string && data.stationName.size() <= 128 &&
+        data.summary is string && data.summary.size() <= 300 &&
+        data.status is string && (data.status in ['Active', 'Critical', 'Warning', 'Under Repair', 'Resolved', 'Archived']) &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 3000)) &&
+        (!('region' in data) || (data.region is string && data.region.size() <= 128)) &&
+        (!('assignedTo' in data) || (data.assignedTo is string && data.assignedTo.size() <= 128)) &&
+        (!('createdBy' in data) || (data.createdBy is string && data.createdBy.size() <= 128)) &&
+        (!('creatorUid' in data) || (data.creatorUid is string && data.creatorUid.size() <= 128)) &&
+        (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64)) &&
+        (!('priority' in data) || (data.priority in ['Low', 'Medium', 'High', 'Emergency'])) &&
+        (!('workOrderId' in data) || data.workOrderId == null || (data.workOrderId is string && data.workOrderId.size() <= 64)) &&
+        (!('notes' in data) || (data.notes is list && data.notes.size() <= 200)) &&
+        (!('sensorRequests' in data) || (data.sensorRequests is list && data.sensorRequests.size() <= 100)) &&
+        (!('isResolved' in data) || data.isResolved is bool) &&
+        (!('resolvedAt' in data) || data.resolvedAt == null || (data.resolvedAt is string && data.resolvedAt.size() <= 64)) &&
+        (!('resolvedBy' in data) || data.resolvedBy == null || (data.resolvedBy is string && data.resolvedBy.size() <= 128)) &&
+        (!('resolutionNotes' in data) || data.resolutionNotes == null || (data.resolutionNotes is string && data.resolutionNotes.size() <= 2000)) &&
+        (!('isAcknowledged' in data) || data.isAcknowledged is bool) &&
+        (!('acknowledgedAt' in data) || data.acknowledgedAt == null || (data.acknowledgedAt is string && data.acknowledgedAt.size() <= 64)) &&
+        (!('acknowledgedBy' in data) || data.acknowledgedBy == null || (data.acknowledgedBy is string && data.acknowledgedBy.size() <= 128)) &&
+        (!('acknowledgmentNotes' in data) || data.acknowledgmentNotes == null || (data.acknowledgmentNotes is string && data.acknowledgmentNotes.size() <= 2000)) &&
+        (!('isArchived' in data) || data.isArchived is bool) &&
+        (!('archivedAt' in data) || data.archivedAt == null || (data.archivedAt is string && data.archivedAt.size() <= 64)) &&
+        (!('archivedBy' in data) || data.archivedBy == null || (data.archivedBy is string && data.archivedBy.size() <= 128)) &&
+        (!('archiveRemarks' in data) || data.archiveRemarks == null || (data.archiveRemarks is string && data.archiveRemarks.size() <= 2000)) &&
+        (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
+    }
+
+    function isValidSystemAnnouncement(data) {
+      return data.keys().hasAll(['id', 'title', 'message', 'severity', 'createdBy']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.title is string && data.title.size() <= 200 &&
+        data.message is string && data.message.size() <= 2000 &&
+        data.severity is string && (data.severity in ['info', 'warning', 'critical']) &&
+        data.createdBy is string && data.createdBy.size() <= 128 &&
+        (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64));
+    }
+
+    // Connection validation check doc
+    match /test/{docId} {
+      allow get: if isValidId(docId);
+    }
+
+    // User Profiles Collection
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      
+      allow create: if isValidId(userId) && isOwner(userId) && isVerified() &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == userId &&
+        (isAdmin() || incoming().role in ['Meteorologist', 'Technician', 'Viewer']);
+
+      allow update: if isValidId(userId) && isVerified() && isValidUserProfile(incoming()) && (
+        isAdmin() ||
+        (
+          isOwner(userId) &&
+          incoming().uid == existing().uid &&
+          incoming().email == existing().email &&
+          (incoming().role == existing().role || isAdmin()) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'office', 'lastLoginAt', 'updatedAt'])
+        )
+      );
+
+      allow delete: if isValidId(userId) && isAdmin();
+
+      // Subcollection: Preferences
+      match /preferences/{prefId} {
+        allow get, list: if isValidId(prefId) && (isOwner(userId) || isAdmin());
+        allow create, update: if isValidId(prefId) && isOwner(userId) && isVerified() &&
+          isValidUserPreference(incoming()) &&
+          incoming().userId == userId;
+        allow delete: if isValidId(prefId) && (isOwner(userId) || isAdmin());
+      }
+
+      // Subcollection: Activity Logs
+      match /activity/{activityId} {
+        allow get, list: if isValidId(activityId) && (isOwner(userId) || isAdmin());
+        allow create: if isValidId(activityId) && isOwner(userId) && isVerified() &&
+          isValidUserActivity(incoming()) &&
+          incoming().userId == userId;
+        allow update, delete: if isValidId(activityId) && isAdmin();
+      }
+    }
+
+    // Maintenance Tickets Collection
+    match /maintenance_tickets/{ticketId} {
+      allow read, list: if isSignedIn();
+      allow create: if isValidId(ticketId) && isSignedIn() && isVerified() &&
+        isValidMaintenanceTicket(incoming());
+      allow update: if isValidId(ticketId) && isSignedIn() && isVerified() &&
+        isValidMaintenanceTicket(incoming());
+      allow delete: if isValidId(ticketId) && isAdmin();
+    }
+
+    // System Announcements Collection
+    match /announcements/{annId} {
+      allow read: if isValidId(annId);
+      allow create: if isValidId(annId) && isAdmin() &&
+        isValidSystemAnnouncement(incoming()) &&
+        incoming().createdBy == request.auth.uid;
+      allow update: if isValidId(annId) && isAdmin() &&
+        isValidSystemAnnouncement(incoming());
+      allow delete: if isValidId(annId) && isAdmin();
+    }
+  }
+}

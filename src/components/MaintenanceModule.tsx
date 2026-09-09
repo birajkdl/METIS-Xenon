@@ -27,14 +27,22 @@ import {
   Users,
   Mail,
   Copy,
-  ExternalLink
+  ExternalLink,
+  Archive,
+  RotateCcw,
+  Sparkles
 } from 'lucide-react';
-import { WeatherStation, MaintenanceTicket, WorkOrder } from '../types.ts';
+import { WeatherStation, MaintenanceTicket, WorkOrder, Sensor, TicketNote, SensorReplacementRequest } from '../types.ts';
+import TicketDetailModal from './maintenance/TicketDetailModal.tsx';
+import ArchivedTicketsView from './maintenance/ArchivedTicketsView.tsx';
+import { subscribeToMaintenanceTickets, saveMaintenanceTicketToFirestore } from '../lib/firestore-service.ts';
+import { Cloud, CloudCheck, Database } from 'lucide-react';
 
 interface MaintenanceModuleProps {
   stations: WeatherStation[];
+  sensors?: Sensor[];
   currentUser?: any;
-  initialTab?: 'tickets' | 'work-orders';
+  initialTab?: 'tickets' | 'work-orders' | 'archive';
   selectedTicketNumber?: string | null;
   selectedWorkOrderId?: string | null;
   selectedStationId?: number | null;
@@ -143,6 +151,7 @@ const INITIAL_WORK_ORDERS: WorkOrder[] = [
 
 export default function MaintenanceModule({ 
   stations, 
+  sensors = [],
   currentUser,
   initialTab,
   selectedTicketNumber,
@@ -150,7 +159,8 @@ export default function MaintenanceModule({
   selectedStationId,
   autoOpenCreateTicket
 }: MaintenanceModuleProps) {
-  const [activeTab, setActiveTab] = useState<'tickets' | 'work-orders'>(initialTab || 'tickets');
+  const [activeTab, setActiveTab] = useState<'tickets' | 'work-orders' | 'archive'>(initialTab || 'tickets');
+  const [ticketCreationBanner, setTicketCreationBanner] = useState<string | null>(null);
   
   // Storage backed state
   const [tickets, setTickets] = useState<MaintenanceTicket[]>(() => {
@@ -184,6 +194,31 @@ export default function MaintenanceModule({
     return 100006;
   });
 
+  const [firestoreSynced, setFirestoreSynced] = useState<boolean>(false);
+
+  // Real-time Firestore synchronizer for maintenance tickets
+  useEffect(() => {
+    let isMounted = true;
+    const unsubscribe = subscribeToMaintenanceTickets((cloudTickets) => {
+      if (!isMounted) return;
+      if (cloudTickets && cloudTickets.length > 0) {
+        setTickets(cloudTickets);
+        setFirestoreSynced(true);
+      } else {
+        // Seed initial tickets to Firestore if cloud collection is fresh
+        INITIAL_TICKETS.forEach(t => {
+          saveMaintenanceTicketToFirestore(t, currentUser?.uid).catch(() => {});
+        });
+        setFirestoreSynced(true);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, [currentUser]);
+
   // Save changes
   useEffect(() => {
     localStorage.setItem('metis_maintenance_tickets', JSON.stringify(tickets));
@@ -198,6 +233,20 @@ export default function MaintenanceModule({
   useEffect(() => {
     localStorage.setItem('metis_next_ticket_num', nextTicketNum.toString());
   }, [nextTicketNum]);
+
+  // Split Active vs Archived Tickets
+  const activeTickets = tickets.filter(t => !t.isArchived);
+  const archivedTickets = tickets.filter(t => t.isArchived);
+
+  // Synchronize selected ticket detail if ticket gets modified
+  useEffect(() => {
+    if (selectedTicketDetail) {
+      const fresh = tickets.find(t => t.ticketNumber === selectedTicketDetail.ticketNumber);
+      if (fresh) {
+        setSelectedTicketDetail(fresh);
+      }
+    }
+  }, [tickets]);
 
   // Combined available usernames list
   const availableUsernames = React.useMemo(() => {
@@ -356,11 +405,21 @@ export default function MaintenanceModule({
       createdBy,
       createdAt,
       priority: newTicketPriority,
-      workOrderId: null
+      workOrderId: null,
+      notes: [],
+      sensorRequests: [],
+      isResolved: false,
+      isAcknowledged: false,
+      isArchived: false
     };
 
     setTickets(prev => [newTicket, ...prev]);
     setNextTicketNum(prev => prev + 1);
+
+    // Persist new ticket to Firestore
+    saveMaintenanceTicketToFirestore(newTicket, currentUser?.uid).catch(err => {
+      console.warn("Firestore ticket creation notice:", err);
+    });
 
     // Auto-dispatch assignment email with direct link
     handleSendAssignmentEmail(
@@ -379,6 +438,293 @@ export default function MaintenanceModule({
     setNewTicketDescription('');
     setNewTicketStatus('No communication');
     setIsAddTicketModalOpen(false);
+
+    // Immediately open Ticket Workspace for follow-up notes and sensor replacement
+    setSelectedTicketDetail(newTicket);
+    setTicketCreationBanner(`Ticket #${ticketNumberStr} created and saved! You can now immediately log follow-up notes or request/assign a working replacement sensor below.`);
+  };
+
+  // Follow-up note logging handler
+  const handleAddTicketNote = (ticketNumber: string, content: string, category: TicketNote['category']) => {
+    const author = currentUser?.displayName || currentUser?.username || currentUser?.email?.split('@')[0] || 'birajkdl';
+    const authorEmail = currentUser?.email || 'birajkdl@gmail.com';
+    const createdAt = new Date().toISOString().replace('T', ' ').substring(0, 16);
+    const newNote: TicketNote = {
+      id: `note-${ticketNumber}-${Date.now()}`,
+      ticketNumber,
+      author,
+      authorEmail,
+      category,
+      content,
+      createdAt
+    };
+
+    setTickets(prev => prev.map(t => {
+      if (t.ticketNumber === ticketNumber) {
+        const updated = {
+          ...t,
+          notes: [newNote, ...(t.notes || [])]
+        };
+        saveMaintenanceTicketToFirestore(updated, currentUser?.uid).catch(err => {
+          console.warn("Firestore note update notice:", err);
+        });
+        return updated;
+      }
+      return t;
+    }));
+  };
+
+  // Sensor replacement request & immediate assignment handler
+  const handleRequestSensorReplacement = (
+    ticketNumber: string,
+    reqData: Omit<SensorReplacementRequest, 'id' | 'requestedAt' | 'ticketNumber' | 'status'>,
+    assignImmediately?: boolean,
+    assignedData?: {
+      sensorId?: number;
+      serial?: string;
+      model?: string;
+      type?: string;
+      manufacturer?: string;
+      notes?: string;
+    }
+  ) => {
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 16);
+    const author = currentUser?.displayName || currentUser?.username || currentUser?.email?.split('@')[0] || 'birajkdl';
+    const reqId = `req-${ticketNumber}-${Date.now()}`;
+
+    const newReq: SensorReplacementRequest = {
+      id: reqId,
+      ticketNumber,
+      stationId: reqData.stationId,
+      stationName: reqData.stationName,
+      faultySensorId: reqData.faultySensorId || null,
+      faultySensorType: reqData.faultySensorType,
+      faultySensorSerial: reqData.faultySensorSerial || null,
+      faultySensorModel: reqData.faultySensorModel || null,
+      faultReason: reqData.faultReason,
+      requestedBy: reqData.requestedBy,
+      requestedAt: now,
+      status: assignImmediately && assignedData ? 'Assigned / In Transit' : 'Requested',
+      assignedSensorId: assignedData?.sensorId || null,
+      assignedSensorSerial: assignedData?.serial || null,
+      assignedSensorModel: assignedData?.model || null,
+      assignedSensorType: assignedData?.type || reqData.faultySensorType,
+      assignedSensorManufacturer: assignedData?.manufacturer || null,
+      assignedBy: assignImmediately && assignedData ? author : null,
+      assignedAt: assignImmediately && assignedData ? now : null,
+      assignmentNotes: assignedData?.notes || null
+    };
+
+    const autoNoteContent = assignImmediately && assignedData
+      ? `Requested replacement for faulty ${reqData.faultySensorType} (${reqData.faultReason}). Immediately assigned working unit SN: ${assignedData.serial} (${assignedData.model || assignedData.type}).`
+      : `Requested replacement for faulty ${reqData.faultySensorType}. Reason: ${reqData.faultReason}.`;
+
+    const autoNote: TicketNote = {
+      id: `note-req-${Date.now()}`,
+      ticketNumber,
+      author,
+      category: 'Sensor Replacement Note',
+      content: autoNoteContent,
+      createdAt: now
+    };
+
+    setTickets(prev => prev.map(t => {
+      if (t.ticketNumber === ticketNumber) {
+        const updated = {
+          ...t,
+          status: t.status === 'No communication' ? t.status : 'sensor issue',
+          sensorRequests: [newReq, ...(t.sensorRequests || [])],
+          notes: [autoNote, ...(t.notes || [])]
+        };
+        saveMaintenanceTicketToFirestore(updated, currentUser?.uid).catch(err => console.warn("Firestore sensor req sync note:", err));
+        return updated;
+      }
+      return t;
+    }));
+  };
+
+  // Assign working sensor to existing request
+  const handleAssignWorkingSensor = (
+    ticketNumber: string,
+    requestId: string,
+    assignment: {
+      assignedSensorId?: number | null;
+      assignedSensorSerial?: string | null;
+      assignedSensorModel?: string | null;
+      assignedSensorType?: string | null;
+      assignedSensorManufacturer?: string | null;
+      assignedBy: string;
+      assignmentNotes?: string | null;
+    }
+  ) => {
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 16);
+    const autoNote: TicketNote = {
+      id: `note-asn-${Date.now()}`,
+      ticketNumber,
+      author: assignment.assignedBy,
+      category: 'Sensor Replacement Note',
+      content: `Assigned working sensor SN: ${assignment.assignedSensorSerial} (${assignment.assignedSensorModel || assignment.assignedSensorType}) to replace faulty equipment.${assignment.assignmentNotes ? ` Remarks: ${assignment.assignmentNotes}` : ''}`,
+      createdAt: now
+    };
+
+    setTickets(prev => prev.map(t => {
+      if (t.ticketNumber === ticketNumber) {
+        const updatedRequests = (t.sensorRequests || []).map(r => {
+          if (r.id === requestId) {
+            return {
+              ...r,
+              status: 'Assigned / In Transit' as const,
+              assignedSensorId: assignment.assignedSensorId || null,
+              assignedSensorSerial: assignment.assignedSensorSerial || null,
+              assignedSensorModel: assignment.assignedSensorModel || null,
+              assignedSensorType: assignment.assignedSensorType || r.faultySensorType,
+              assignedSensorManufacturer: assignment.assignedSensorManufacturer || null,
+              assignedBy: assignment.assignedBy,
+              assignedAt: now,
+              assignmentNotes: assignment.assignmentNotes || null
+            };
+          }
+          return r;
+        });
+
+        const updated = {
+          ...t,
+          sensorRequests: updatedRequests,
+          notes: [autoNote, ...(t.notes || [])]
+        };
+        saveMaintenanceTicketToFirestore(updated, currentUser?.uid).catch(err => console.warn("Firestore sensor assign sync note:", err));
+        return updated;
+      }
+      return t;
+    }));
+  };
+
+  // Problem solved / resolution handler
+  const handleResolveTicket = (ticketNumber: string, resolutionNotes: string) => {
+    const author = currentUser?.displayName || currentUser?.username || currentUser?.email?.split('@')[0] || 'birajkdl';
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 16);
+    const autoNote: TicketNote = {
+      id: `note-res-${Date.now()}`,
+      ticketNumber,
+      author,
+      category: 'Progress Update',
+      content: `Problem marked as solved by ${author}. Resolution: "${resolutionNotes}". Awaiting verification & acknowledgment.`,
+      createdAt: now
+    };
+
+    setTickets(prev => prev.map(t => {
+      if (t.ticketNumber === ticketNumber) {
+        const updated = {
+          ...t,
+          status: 'Problem Solved (Awaiting Ack)',
+          isResolved: true,
+          resolvedAt: now,
+          resolvedBy: author,
+          resolutionNotes,
+          notes: [autoNote, ...(t.notes || [])]
+        };
+        saveMaintenanceTicketToFirestore(updated, currentUser?.uid).catch(err => console.warn("Firestore resolve sync note:", err));
+        return updated;
+      }
+      return t;
+    }));
+  };
+
+  // Acknowledgment handler
+  const handleAcknowledgeTicket = (ticketNumber: string, acknowledgmentNotes: string) => {
+    const author = currentUser?.displayName || currentUser?.username || currentUser?.email?.split('@')[0] || 'birajkdl';
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 16);
+    const autoNote: TicketNote = {
+      id: `note-ack-${Date.now()}`,
+      ticketNumber,
+      author,
+      category: 'Progress Update',
+      content: `Problem resolution ACKNOWLEDGED by ${author}: "${acknowledgmentNotes}". Ticket is verified and eligible to be closed & stored in archive.`,
+      createdAt: now
+    };
+
+    setTickets(prev => prev.map(t => {
+      if (t.ticketNumber === ticketNumber) {
+        const updated = {
+          ...t,
+          isAcknowledged: true,
+          acknowledgedAt: now,
+          acknowledgedBy: author,
+          acknowledgmentNotes,
+          notes: [autoNote, ...(t.notes || [])]
+        };
+        saveMaintenanceTicketToFirestore(updated, currentUser?.uid).catch(err => console.warn("Firestore ack sync note:", err));
+        return updated;
+      }
+      return t;
+    }));
+  };
+
+  // Close and archive ticket (strictly validates isAcknowledged!)
+  const handleCloseAndArchive = (ticketNumber: string, remarks?: string) => {
+    const author = currentUser?.displayName || currentUser?.username || currentUser?.email?.split('@')[0] || 'birajkdl';
+    const target = tickets.find(t => t.ticketNumber === ticketNumber);
+    if (!target) return;
+
+    if (!target.isAcknowledged) {
+      alert('Action Denied: Resolution must be acknowledged by anyone before this ticket can be closed and archived.');
+      return;
+    }
+
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 16);
+    const autoNote: TicketNote = {
+      id: `note-arc-${Date.now()}`,
+      ticketNumber,
+      author,
+      category: 'General Note',
+      content: `Ticket officially closed and stored in permanent archive by ${author}.${remarks ? ` Remarks: ${remarks}` : ''}`,
+      createdAt: now
+    };
+
+    setTickets(prev => prev.map(t => {
+      if (t.ticketNumber === ticketNumber) {
+        const updated = {
+          ...t,
+          status: 'Closed & Archived',
+          isArchived: true,
+          archivedAt: now,
+          archivedBy: author,
+          archiveRemarks: remarks || null,
+          notes: [autoNote, ...(t.notes || [])]
+        };
+        saveMaintenanceTicketToFirestore(updated, currentUser?.uid).catch(err => console.warn("Firestore archive sync note:", err));
+        return updated;
+      }
+      return t;
+    }));
+
+    setSelectedTicketDetail(null);
+  };
+
+  // Restore ticket from archive back to active
+  const handleRestoreTicket = (ticketNumber: string) => {
+    const author = currentUser?.displayName || currentUser?.username || currentUser?.email?.split('@')[0] || 'birajkdl';
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 16);
+    const autoNote: TicketNote = {
+      id: `note-rst-${Date.now()}`,
+      ticketNumber,
+      author,
+      category: 'General Note',
+      content: `Ticket restored from archive to active queue by ${author}.`,
+      createdAt: now
+    };
+
+    setTickets(prev => prev.map(t => {
+      if (t.ticketNumber === ticketNumber) {
+        return {
+          ...t,
+          status: 'Warning',
+          isArchived: false,
+          notes: [autoNote, ...(t.notes || [])]
+        };
+      }
+      return t;
+    }));
   };
 
   // Form submit handler for creating a Work Order
@@ -460,8 +806,8 @@ export default function MaintenanceModule({
     }));
   };
 
-  // Filtered Tickets
-  const filteredTickets = tickets.filter(t => {
+  // Filtered Tickets (Active unarchived queue)
+  const filteredTickets = activeTickets.filter(t => {
     const matchesSearch = 
       t.ticketNumber.toLowerCase().includes(ticketSearch.toLowerCase()) ||
       t.stationName.toLowerCase().includes(ticketSearch.toLowerCase()) ||
@@ -570,54 +916,85 @@ export default function MaintenanceModule({
             <p className="text-xs text-zinc-400 mt-1 max-w-2xl">
               Track station issue tickets with unique 6-digit reference numbers, assign engineers, and dispatch field work orders for meteorological network maintenance.
             </p>
+            <div className="flex items-center gap-2 mt-2">
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-emerald-500/15 border border-emerald-500/30 text-emerald-300">
+                <Database className="h-3 w-3 text-emerald-400" />
+                Firestore Persistence Active
+              </span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono text-zinc-400 bg-zinc-900/60 border border-zinc-800">
+                <CloudCheck className="h-3 w-3 text-blue-400" />
+                Cloud Real-Time Listener Connected
+              </span>
+            </div>
           </div>
 
           <div className="flex items-center space-x-3 shrink-0">
             <div className="bg-[#080c14] border border-[#1e293b] rounded-lg p-3 flex items-center gap-4 text-center">
               <div>
-                <span className="text-[10px] text-zinc-500 uppercase font-mono block">Total Tickets</span>
-                <span className="text-lg font-bold font-mono text-blue-400">{tickets.length}</span>
+                <span className="text-[10px] text-zinc-500 uppercase font-mono block">Active Tickets</span>
+                <span className="text-lg font-bold font-mono text-blue-400">{activeTickets.length}</span>
               </div>
               <div className="w-px h-8 bg-[#1e293b]"></div>
               <div>
                 <span className="text-[10px] text-zinc-500 uppercase font-mono block">Work Orders</span>
                 <span className="text-lg font-bold font-mono text-purple-400">{workOrders.length}</span>
               </div>
+              <div className="w-px h-8 bg-[#1e293b]"></div>
+              <div>
+                <span className="text-[10px] text-zinc-500 uppercase font-mono block">Archived</span>
+                <span className="text-lg font-bold font-mono text-amber-400">{archivedTickets.length}</span>
+              </div>
             </div>
           </div>
         </div>
 
         {/* Tab Navigation */}
-        <div className="flex items-center space-x-2 mt-6 pt-4 border-t border-[#1e293b]">
+        <div className="flex items-center space-x-2 mt-6 pt-4 border-t border-[#1e293b] overflow-x-auto">
           <button
             id="tab-btn-tickets"
             onClick={() => setActiveTab('tickets')}
-            className={`px-5 py-2.5 rounded-lg text-xs font-mono font-bold flex items-center space-x-2 transition cursor-pointer ${
+            className={`px-5 py-2.5 rounded-lg text-xs font-mono font-bold flex items-center space-x-2 transition cursor-pointer shrink-0 ${
               activeTab === 'tickets'
                 ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/40 border border-blue-500'
                 : 'bg-[#090e17] text-zinc-400 hover:text-white border border-[#1e293b]'
             }`}
           >
             <Ticket className="h-4 w-4" />
-            <span>1. Tickets</span>
+            <span>1. Active Tickets</span>
             <span className={`px-2 py-0.5 rounded-full text-[10px] ${activeTab === 'tickets' ? 'bg-white/20 text-white' : 'bg-zinc-800 text-zinc-400'}`}>
-              {tickets.length}
+              {activeTickets.length}
             </span>
           </button>
 
           <button
             id="tab-btn-work-orders"
             onClick={() => setActiveTab('work-orders')}
-            className={`px-5 py-2.5 rounded-lg text-xs font-mono font-bold flex items-center space-x-2 transition cursor-pointer ${
+            className={`px-5 py-2.5 rounded-lg text-xs font-mono font-bold flex items-center space-x-2 transition cursor-pointer shrink-0 ${
               activeTab === 'work-orders'
                 ? 'bg-purple-600 text-white shadow-lg shadow-purple-900/40 border border-purple-500'
                 : 'bg-[#090e17] text-zinc-400 hover:text-white border border-[#1e293b]'
             }`}
           >
             <ClipboardList className="h-4 w-4" />
-            <span>2. Work Order</span>
+            <span>2. Work Orders</span>
             <span className={`px-2 py-0.5 rounded-full text-[10px] ${activeTab === 'work-orders' ? 'bg-white/20 text-white' : 'bg-zinc-800 text-zinc-400'}`}>
               {workOrders.length}
+            </span>
+          </button>
+
+          <button
+            id="tab-btn-archived-tickets"
+            onClick={() => setActiveTab('archive')}
+            className={`px-5 py-2.5 rounded-lg text-xs font-mono font-bold flex items-center space-x-2 transition cursor-pointer shrink-0 ${
+              activeTab === 'archive'
+                ? 'bg-amber-600 text-white shadow-lg shadow-amber-900/40 border border-amber-500'
+                : 'bg-[#090e17] text-zinc-400 hover:text-white border border-[#1e293b]'
+            }`}
+          >
+            <Archive className="h-4 w-4" />
+            <span>3. Archived Tickets</span>
+            <span className={`px-2 py-0.5 rounded-full text-[10px] ${activeTab === 'archive' ? 'bg-white/20 text-white' : 'bg-zinc-800 text-zinc-400'}`}>
+              {archivedTickets.length}
             </span>
           </button>
         </div>
@@ -950,6 +1327,16 @@ export default function MaintenanceModule({
         </div>
       )}
 
+      {/* TAB 3: ARCHIVED TICKETS REPOSITORY */}
+      {activeTab === 'archive' && (
+        <ArchivedTicketsView
+          archivedTickets={archivedTickets}
+          stations={stations}
+          onViewTicket={(t) => setSelectedTicketDetail(t)}
+          onRestoreTicket={handleRestoreTicket}
+        />
+      )}
+
       {/* MODAL 1: ADD NEW TICKET (+ SYMBOL MODAL) */}
       {isAddTicketModalOpen && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
@@ -1260,107 +1647,29 @@ export default function MaintenanceModule({
         </div>
       )}
 
-      {/* MODAL 3: TICKET DETAIL VIEW */}
+      {/* MODAL 3: TICKET LIFECYCLE, FOLLOW-UP NOTES & SENSOR REPLACEMENT WORKSPACE */}
       {selectedTicketDetail && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-[#0b0e14] border border-blue-500/40 rounded-xl max-w-md w-full p-6 space-y-4 shadow-2xl relative">
-            <div className="flex items-center justify-between border-b border-[#1b2536] pb-3">
-              <div>
-                <span className="text-[10px] font-mono text-blue-400 uppercase font-bold">Ticket Details</span>
-                <h3 className="font-serif text-lg font-bold text-white">#{selectedTicketDetail.ticketNumber}</h3>
-              </div>
-              <button
-                onClick={() => setSelectedTicketDetail(null)}
-                className="text-zinc-400 hover:text-white p-1 rounded transition cursor-pointer"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="space-y-3 font-mono text-xs">
-              <div className="bg-[#06080d] p-3 rounded-lg border border-[#1a2230] space-y-1.5">
-                <div className="flex justify-between text-zinc-400">
-                  <span>Station:</span>
-                  <span className="text-white font-bold">{selectedTicketDetail.stationName}</span>
-                </div>
-                <div className="flex justify-between text-zinc-400">
-                  <span>Issue Status:</span>
-                  <div>{renderStatusBadge(selectedTicketDetail.status)}</div>
-                </div>
-                <div className="flex justify-between text-zinc-400">
-                  <span>Assigned User:</span>
-                  <span className="text-blue-300 font-bold">{selectedTicketDetail.assignedTo}</span>
-                </div>
-                <div className="flex justify-between text-zinc-400">
-                  <span>Created By:</span>
-                  <span className="text-zinc-300">{selectedTicketDetail.createdBy} ({selectedTicketDetail.createdAt})</span>
-                </div>
-              </div>
-
-              <div>
-                <span className="text-zinc-500 font-bold uppercase text-[10px] block mb-1">Summary</span>
-                <p className="text-zinc-100 font-semibold bg-[#06080d] p-2.5 rounded border border-[#1a2230]">
-                  {selectedTicketDetail.summary}
-                </p>
-              </div>
-
-              <div>
-                <span className="text-zinc-500 font-bold uppercase text-[10px] block mb-1">Description</span>
-                <p className="text-zinc-300 font-sans leading-relaxed bg-[#06080d] p-2.5 rounded border border-[#1a2230]">
-                  {selectedTicketDetail.description}
-                </p>
-              </div>
-
-              {/* Direct Email Notification Dispatch Box */}
-              <div className="bg-[#070a10] p-3 rounded-lg border border-blue-500/30 space-y-2">
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className="text-zinc-300 font-bold flex items-center gap-1.5">
-                    <Mail className="h-3.5 w-3.5 text-blue-400" />
-                    Dispatch Ticket Email Link
-                  </span>
-                  <span className="text-[10px] text-blue-400 font-mono">Registered Email ID</span>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <input
-                    type="email"
-                    defaultValue={currentUser?.email || `${selectedTicketDetail.assignedTo.toLowerCase()}@met.gov.np`}
-                    id={`ticket-detail-email-${selectedTicketDetail.ticketNumber}`}
-                    className="flex-1 px-2.5 py-1.5 bg-[#06080d] border border-[#1e293b] rounded text-zinc-200 text-xs focus:outline-none focus:border-blue-500 font-mono"
-                    placeholder="user@met.gov.np"
-                  />
-                  <button
-                    onClick={() => {
-                      const input = document.getElementById(`ticket-detail-email-${selectedTicketDetail.ticketNumber}`) as HTMLInputElement;
-                      const emailVal = input && input.value ? input.value : currentUser?.email || `${selectedTicketDetail.assignedTo.toLowerCase()}@met.gov.np`;
-                      handleSendAssignmentEmail(
-                        emailVal,
-                        'ticket',
-                        selectedTicketDetail.ticketNumber,
-                        selectedTicketDetail.summary,
-                        selectedTicketDetail.assignedTo,
-                        selectedTicketDetail.stationName,
-                        selectedTicketDetail.priority || 'Medium'
-                      );
-                    }}
-                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded font-bold text-xs flex items-center space-x-1 transition cursor-pointer shrink-0 shadow-sm"
-                  >
-                    <Send className="h-3.5 w-3.5" />
-                    <span>Send Link</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div className="pt-2 border-t border-[#1b2536] flex justify-end">
-              <button
-                onClick={() => setSelectedTicketDetail(null)}
-                className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg transition font-mono text-xs font-bold"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
+        <TicketDetailModal
+          ticket={selectedTicketDetail}
+          stations={stations}
+          sensors={sensors}
+          currentUser={currentUser}
+          bannerMessage={ticketCreationBanner}
+          onClose={() => {
+            setSelectedTicketDetail(null);
+            setTicketCreationBanner(null);
+          }}
+          onAddNote={handleAddTicketNote}
+          onRequestSensor={handleRequestSensorReplacement}
+          onAssignSensor={handleAssignWorkingSensor}
+          onResolve={handleResolveTicket}
+          onAcknowledge={handleAcknowledgeTicket}
+          onArchive={handleCloseAndArchive}
+          onUpdateStatus={(ticketNum, newStatus) => {
+            setTickets(prev => prev.map(t => t.ticketNumber === ticketNum ? { ...t, status: newStatus } : t));
+          }}
+          onSendEmail={handleSendAssignmentEmail}
+        />
       )}
 
       {/* MODAL 4: WORK ORDER SHEET VIEW */}

@@ -331,6 +331,40 @@ export interface AppDocument {
   uploadedAt: string;
 }
 
+export interface TicketNote {
+  id: string;
+  ticketNumber: string;
+  author: string;
+  authorEmail?: string;
+  category: 'Progress Update' | 'Field Inspection' | 'Diagnostic Finding' | 'Sensor Replacement Note' | 'General Note';
+  content: string;
+  createdAt: string;
+}
+
+export interface SensorReplacementRequest {
+  id: string;
+  ticketNumber: string;
+  stationId: number;
+  stationName: string;
+  faultySensorId?: number | null;
+  faultySensorType: string;
+  faultySensorSerial?: string | null;
+  faultySensorModel?: string | null;
+  faultReason: string;
+  requestedBy: string;
+  requestedAt: string;
+  status: 'Requested' | 'Assigned / In Transit' | 'Installed & Tested' | 'Completed';
+  // Working sensor assigned from inventory or warehouse:
+  assignedSensorId?: number | null;
+  assignedSensorSerial?: string | null;
+  assignedSensorModel?: string | null;
+  assignedSensorType?: string | null;
+  assignedSensorManufacturer?: string | null;
+  assignedBy?: string | null;
+  assignedAt?: string | null;
+  assignmentNotes?: string | null;
+}
+
 export interface MaintenanceTicket {
   ticketNumber: string; // 6-digit number, e.g. "100001"
   stationId: number;
@@ -344,6 +378,30 @@ export interface MaintenanceTicket {
   createdAt: string;
   priority?: 'Low' | 'Medium' | 'High' | 'Emergency';
   workOrderId?: string | null; // Linked work order ID
+
+  // Follow-up Notes & Timeline
+  notes?: TicketNote[];
+
+  // Sensor Replacement Request & Assignment
+  sensorRequests?: SensorReplacementRequest[];
+
+  // Problem Resolution state
+  isResolved?: boolean;
+  resolvedAt?: string | null;
+  resolvedBy?: string | null;
+  resolutionNotes?: string | null;
+
+  // Acknowledgment requirement (mandatory before archive)
+  isAcknowledged?: boolean;
+  acknowledgedAt?: string | null;
+  acknowledgedBy?: string | null;
+  acknowledgmentNotes?: string | null;
+
+  // Closed & Stored in Archive state
+  isArchived?: boolean;
+  archivedAt?: string | null;
+  archivedBy?: string | null;
+  archiveRemarks?: string | null;
 }
 
 export interface WorkOrder {

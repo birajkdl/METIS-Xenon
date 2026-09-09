@@ -3,7 +3,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   signInWithPopup, 
   signOut, 
-  onAuthStateChanged, 
+  onAuthStateChanged,
+  onIdTokenChanged,
   User 
 } from 'firebase/auth';
 import {
@@ -40,6 +41,17 @@ import {
   ReferenceLine
 } from 'recharts';
 import { auth, googleAuthProvider } from './lib/firebase.ts';
+import { 
+  syncUserProfileToFirestore, 
+  subscribeToUserProfile, 
+  saveUserPreferencesToFirestore, 
+  subscribeToUserPreferences, 
+  verifyFirestoreConnectivity, 
+  logUserActivityToFirestore,
+  saveMaintenanceTicketToFirestore,
+  UserProfileDoc 
+} from './lib/firestore-service.ts';
+import { Database, Cloud, LogIn } from 'lucide-react';
 import Sidebar from './components/Sidebar.tsx';
 import Dashboard from './components/Dashboard.tsx';
 import InventoryList from './components/InventoryList.tsx';
@@ -66,6 +78,23 @@ import MaintenanceModule from './components/MaintenanceModule.tsx';
 import StationHealthView from './components/StationHealthView.tsx';
 import { DashboardStats, WeatherStation, Sensor, MaintenanceTicket } from './types.ts';
 
+// Helper to check if a JWT token has expired or is expiring soon (buffer of 60s)
+function isJwtExpired(tokenString: string | null): boolean {
+  if (!tokenString) return true;
+  if (tokenString.startsWith('metis.')) return false; // Native server-minted METIS token
+  try {
+    const parts = tokenString.split('.');
+    if (parts.length !== 3) return false;
+    const payload = JSON.parse(atob(parts[1]));
+    if (payload.exp && Date.now() >= (payload.exp - 60) * 1000) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 export default function App() {
   const [activeView, setActiveView] = useState<'dashboard' | 'station-health' | 'inventory' | 'alerts' | 'registration' | 'lifecycle' | 'status-tracking' | 'deployments' | 'transfers' | 'administration' | 'warranty' | 'gis' | 'notifications' | 'reports' | 'audit' | 'suppliers' | 'stations' | 'documents' | 'calibration-lab' | 'installation-planning' | 'capital-budgeting' | 'maintenance'>('dashboard');
   
@@ -88,7 +117,13 @@ export default function App() {
   }, [theme]);
 
   const toggleTheme = () => {
-    setTheme(prev => prev === 'light' ? 'dark' : 'light');
+    setTheme(prev => {
+      const next = prev === 'light' ? 'dark' : 'light';
+      if (auth.currentUser) {
+        saveUserPreferencesToFirestore(auth.currentUser.uid, { theme: next }).catch(() => {});
+      }
+      return next;
+    });
   };
 
   // Check if opening a full-page Station Dossier Report (new tab workflow)
@@ -220,6 +255,11 @@ export default function App() {
       localStorage.setItem('metis_maintenance_tickets', JSON.stringify(list));
       localStorage.setItem('metis_next_ticket_num', (nextNum + 1).toString());
     } catch (e) {}
+
+    // Persist to Firestore cloud database
+    saveMaintenanceTicketToFirestore(newTicket, auth.currentUser?.uid).catch(err => {
+      console.warn("Proactive ticket Firestore sync note:", err);
+    });
 
     const ticket = {
       ticketId: `MNT-${ticketNumberStr}`,
@@ -405,35 +445,19 @@ export default function App() {
     // Restore saved session token (both native METIS tokens and Firebase tokens)
     const savedToken = localStorage.getItem('metis_auth_token');
     if (savedToken) {
-      setToken(savedToken);
-      fetch('/api/me', {
-        headers: {
-          'Authorization': `Bearer ${savedToken}`
-        }
-      })
-      .then(res => {
-        if (res.ok) return res.json();
-        throw new Error("Stored token expired or invalidated");
-      })
-      .then(data => {
-        if (data) {
-          setDbUser(data);
-          setUser({
-            email: data.email,
-            displayName: data.username || data.email.split('@')[0],
-            uid: data.userId
-          } as any);
-        }
-      })
-      .catch(err => {
-        console.warn("Session restore check note:", err);
-      });
+      if (isJwtExpired(savedToken)) {
+        // Expired token: remove stale credentials so expired tokens are never transmitted
+        localStorage.removeItem('metis_auth_token');
+        localStorage.removeItem('metis_user_email');
+      } else {
+        setToken(savedToken);
+      }
     }
   }, []);
 
-  // 2. Listen to Firebase Auth state
+  // 2. Listen to Firebase Auth state and token updates
   useEffect(() => {
-    return onAuthStateChanged(auth, async (currentUser) => {
+    const unsubscribe = onIdTokenChanged(auth, async (currentUser) => {
       if (currentUser) {
         setUser(currentUser);
         try {
@@ -441,8 +465,49 @@ export default function App() {
           setToken(idToken);
           localStorage.setItem('metis_auth_token', idToken);
           localStorage.setItem('metis_user_email', currentUser.email || '');
+
+          // Automatically sync user profile to Firestore and initialize profile state
+          syncUserProfileToFirestore(currentUser).then(profile => {
+            if (profile) {
+              setDbUser(prev => prev ? { ...prev, role: profile.role } : {
+                id: 1,
+                uid: profile.uid,
+                email: profile.email,
+                displayName: profile.displayName,
+                photoURL: profile.photoURL || null,
+                role: profile.role,
+                assignedStationId: null,
+                office: profile.office || null
+              });
+            }
+          }).catch(err => {
+            console.warn("Firestore user profile sync notice:", err);
+          });
+
+          // Real-time Firestore subscription to user profile updates
+          subscribeToUserProfile(currentUser.uid, (profile) => {
+            if (profile) {
+              setDbUser(prev => ({
+                id: prev?.id || 1,
+                uid: profile.uid,
+                email: profile.email,
+                displayName: profile.displayName,
+                photoURL: profile.photoURL || null,
+                role: profile.role,
+                assignedStationId: prev?.assignedStationId || null,
+                office: profile.office || null
+              }));
+            }
+          });
+
+          // Subscribe to user preferences from Firestore (e.g. theme)
+          subscribeToUserPreferences(currentUser.uid, (prefs) => {
+            if (prefs?.theme && (prefs.theme === 'light' || prefs.theme === 'dark')) {
+              setTheme(prefs.theme);
+            }
+          });
         } catch (e) {
-          console.error("Failed to fetch ID token:", e);
+          console.warn("Failed to fetch fresh ID token:", e);
         }
       } else {
         // Only clear if we don't have a native METIS token in localStorage
@@ -455,6 +520,24 @@ export default function App() {
       }
       setLoadingAuth(false);
     });
+
+    // Proactive token refresh interval: refreshes active Firebase token every 40 minutes (tokens expire at 60 mins)
+    const refreshInterval = setInterval(async () => {
+      if (auth.currentUser) {
+        try {
+          const freshToken = await auth.currentUser.getIdToken(true);
+          setToken(freshToken);
+          localStorage.setItem('metis_auth_token', freshToken);
+        } catch (err) {
+          console.warn("Proactive token refresh notice:", err);
+        }
+      }
+    }, 40 * 60 * 1000);
+
+    return () => {
+      unsubscribe();
+      clearInterval(refreshInterval);
+    };
   }, []);
 
   // 2. Fetch data from backend
@@ -495,26 +578,118 @@ export default function App() {
 
   // Fetch database user profile details when authenticated
   useEffect(() => {
-    if (token) {
-      fetch('/api/me', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      })
-      .then(res => {
-        if (res.ok) return res.json();
-        throw new Error("Failed to load user profile");
-      })
-      .then(data => {
-        setDbUser(data);
-      })
-      .catch(err => {
-        console.error("Error fetching dbUser role profile:", err);
-        setDbUser(null);
-      });
-    } else {
+    let isCancelled = false;
+
+    if (!token) {
       setDbUser(null);
+      return;
     }
+
+    // Check if token is already expired client-side before transmitting
+    if (isJwtExpired(token)) {
+      if (auth.currentUser) {
+        auth.currentUser.getIdToken(true).then(freshToken => {
+          if (!isCancelled) {
+            setToken(freshToken);
+            localStorage.setItem('metis_auth_token', freshToken);
+          }
+        }).catch(() => {
+          localStorage.removeItem('metis_auth_token');
+          if (!isCancelled) {
+            setToken(null);
+            setDbUser(null);
+          }
+        });
+      } else {
+        localStorage.removeItem('metis_auth_token');
+        setToken(null);
+        setDbUser(null);
+      }
+      return;
+    }
+
+    const loadUserProfile = async (authToken: string) => {
+      try {
+        const res = await fetch('/api/me', {
+          headers: {
+            'Authorization': `Bearer ${authToken}`
+          }
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (!isCancelled && data) {
+            setDbUser(data);
+          }
+          return;
+        }
+
+        // If 401 and Firebase user is present, attempt automatic refresh
+        if (res.status === 401 && auth.currentUser) {
+          try {
+            const freshToken = await auth.currentUser.getIdToken(true);
+            if (isCancelled) return;
+            setToken(freshToken);
+            localStorage.setItem('metis_auth_token', freshToken);
+            const retryRes = await fetch('/api/me', {
+              headers: { 'Authorization': `Bearer ${freshToken}` }
+            });
+            if (retryRes.ok) {
+              const retryData = await retryRes.json();
+              if (!isCancelled && retryData) {
+                setDbUser(retryData);
+                return;
+              }
+            }
+          } catch (refreshErr) {
+            console.warn("Token refresh attempt notice:", refreshErr);
+          }
+        }
+
+        // If Cloud SQL endpoint fails or session token is invalid, fallback gracefully
+        if (auth.currentUser) {
+          const isMaster = auth.currentUser.email === 'birajkdl@gmail.com';
+          if (!isCancelled) {
+            setDbUser(prev => prev || {
+              id: 1,
+              uid: auth.currentUser!.uid,
+              email: auth.currentUser!.email || '',
+              displayName: auth.currentUser!.displayName || auth.currentUser!.email?.split('@')[0] || 'User',
+              photoURL: auth.currentUser!.photoURL || null,
+              role: isMaster ? 'Super Administrator' : 'Meteorologist',
+              assignedStationId: null
+            });
+          }
+        } else {
+          // Stale non-Firebase token
+          localStorage.removeItem('metis_auth_token');
+          if (!isCancelled) {
+            setToken(null);
+            setDbUser(null);
+          }
+        }
+      } catch (err: any) {
+        console.warn("User profile fetch note:", err?.message || err);
+        if (auth.currentUser && !isCancelled) {
+          const isMaster = auth.currentUser.email === 'birajkdl@gmail.com';
+          setDbUser(prev => prev || {
+            id: 1,
+            uid: auth.currentUser!.uid,
+            email: auth.currentUser!.email || '',
+            displayName: auth.currentUser!.displayName || auth.currentUser!.email?.split('@')[0] || 'User',
+            photoURL: auth.currentUser!.photoURL || null,
+            role: isMaster ? 'Super Administrator' : 'Meteorologist',
+            assignedStationId: null
+          });
+        }
+      }
+    };
+
+    loadUserProfile(token);
+
+    return () => {
+      isCancelled = true;
+    };
   }, [token]);
 
   // Deep Link & Email Link Redirect Handler
@@ -1199,6 +1374,7 @@ export default function App() {
           <div className="flex-1 overflow-y-auto p-6 bg-zinc-50 dark:bg-zinc-950/20 text-gray-900 dark:text-gray-100">
             <MaintenanceModule
               stations={stations}
+              sensors={sensors}
               currentUser={user || dbUser}
               initialTab={maintenanceTarget?.tab}
               selectedTicketNumber={maintenanceTarget?.ticketNumber}

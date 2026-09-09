@@ -78,3 +78,23 @@ export function verifyMetisToken(token: string): MetisTokenPayload | null {
     return null;
   }
 }
+
+/**
+ * Normalizes phone numbers to standard E.164 format (+[country code][number]) if possible,
+ * or returns undefined if invalid or empty.
+ * Firebase Admin strictly requires non-empty E.164 strings.
+ */
+export function toE164(phone: string | null | undefined): string | undefined {
+  if (!phone) return undefined;
+  const trimmed = phone.trim().replace(/[\s\-()]/g, '');
+  if (!trimmed) return undefined;
+  // If already starts with + and contains between 7 and 15 digits
+  if (/^\+[1-9]\d{6,14}$/.test(trimmed)) {
+    return trimmed;
+  }
+  // Nepal numbers: 10 digits starting with 98, 97, or 96
+  if (/^(98|97|96)\d{8}$/.test(trimmed)) {
+    return `+977${trimmed}`;
+  }
+  return undefined;
+}

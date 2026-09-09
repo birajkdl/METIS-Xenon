@@ -1,0 +1,119 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile metadata, verified roles, and meteorological agency assignments",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 256 },
+        "displayName": { "type": "string", "maxLength": 128 },
+        "photoURL": { "type": "string", "maxLength": 1024 },
+        "role": { "type": "string", "enum": ["Super Administrator", "Administrator", "Meteorologist", "Technician", "Viewer"] },
+        "office": { "type": "string", "maxLength": 128 },
+        "lastLoginAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "UserPreference": {
+      "title": "UserPreference",
+      "description": "User specific dashboard preferences, favorite stations, and notification toggles",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "theme": { "type": "string", "enum": ["light", "dark", "system"] },
+        "autoRefresh": { "type": "boolean" },
+        "pinnedStationIds": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId"]
+    },
+    "UserActivity": {
+      "title": "UserActivity",
+      "description": "User audit trail of operations, logins, and ticket interactions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "action": { "type": "string", "maxLength": 100 },
+        "details": { "type": "string", "maxLength": 1000 },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "action", "timestamp"]
+    },
+    "MaintenanceTicket": {
+      "title": "MaintenanceTicket",
+      "description": "Telemetry station maintenance and repair tickets with notes, sensor requests, and quality gate acknowledgments",
+      "type": "object",
+      "properties": {
+        "ticketNumber": { "type": "string", "maxLength": 64 },
+        "stationId": { "type": "number" },
+        "stationName": { "type": "string", "maxLength": 128 },
+        "region": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["Active", "Critical", "Warning", "Under Repair", "Resolved", "Archived"] },
+        "summary": { "type": "string", "maxLength": 300 },
+        "description": { "type": "string", "maxLength": 3000 },
+        "assignedTo": { "type": "string", "maxLength": 128 },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "creatorUid": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "priority": { "type": "string", "enum": ["Low", "Medium", "High", "Emergency"] },
+        "workOrderId": { "type": "string", "maxLength": 64 },
+        "notes": { "type": "array" },
+        "sensorRequests": { "type": "array" },
+        "isResolved": { "type": "boolean" },
+        "resolvedAt": { "type": "string", "maxLength": 64 },
+        "resolvedBy": { "type": "string", "maxLength": 128 },
+        "resolutionNotes": { "type": "string", "maxLength": 2000 },
+        "isAcknowledged": { "type": "boolean" },
+        "acknowledgedAt": { "type": "string", "maxLength": 64 },
+        "acknowledgedBy": { "type": "string", "maxLength": 128 },
+        "acknowledgmentNotes": { "type": "string", "maxLength": 2000 },
+        "isArchived": { "type": "boolean" },
+        "archivedAt": { "type": "string", "maxLength": 64 },
+        "archivedBy": { "type": "string", "maxLength": 128 },
+        "archiveRemarks": { "type": "string", "maxLength": 2000 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ticketNumber", "stationId", "stationName", "summary", "status"]
+    },
+    "SystemAnnouncement": {
+      "title": "SystemAnnouncement",
+      "description": "Official meteorological advisories, maintenance bulletins, and severe weather warnings",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 200 },
+        "message": { "type": "string", "maxLength": 2000 },
+        "severity": { "type": "string", "enum": ["info", "warning", "critical"] },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "message", "severity", "createdBy"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profile documents keyed by Firebase Auth UID"
+    },
+    "/users/{userId}/preferences/{preferenceId}": {
+      "schema": { "$ref": "#/entities/UserPreference" },
+      "description": "Operator personal preferences scoped under user UID"
+    },
+    "/users/{userId}/activity/{activityId}": {
+      "schema": { "$ref": "#/entities/UserActivity" },
+      "description": "User activity and audit history scoped under user UID"
+    },
+    "/maintenance_tickets/{ticketId}": {
+      "schema": { "$ref": "#/entities/MaintenanceTicket" },
+      "description": "Synchronized telemetry station maintenance tickets and lifecycle notes"
+    },
+    "/announcements/{announcementId}": {
+      "schema": { "$ref": "#/entities/SystemAnnouncement" },
+      "description": "Public weather alerts and system bulletins"
+    }
+  }
+}

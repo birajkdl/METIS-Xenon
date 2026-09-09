@@ -3,7 +3,10 @@
   "appId": "1:30318741282:web:f1382a637f142fecfb077b",
   "apiKey": "AIzaSyDEuSK0j09kNJ-I4qeTakljZfWIdCW6KuE",
   "authDomain": "peta-rider-7bndl.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-metisbybiraj-50e527de-7a44-4079-8090-fda30949cfc1",
   "storageBucket": "peta-rider-7bndl.firebasestorage.app",
   "messagingSenderId": "30318741282",
-  "measurementId": ""
+  "measurementId": "",
+  "oAuthClientId": "30318741282-93769kduhcjikgdb7fujt9ig0a970ut6.apps.googleusercontent.com",
+  "recaptchaSiteKey": ""
 }
