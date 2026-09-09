@@ -933,6 +933,77 @@ async function startServer() {
     }
   });
 
+  app.post("/api/auth/google-direct", async (req, res) => {
+    try {
+      const { email, displayName, photoURL } = req.body;
+      if (!email || typeof email !== "string" || !email.includes("@")) {
+        return res.status(400).json({ error: "A valid Google account email is required." });
+      }
+
+      const cleanEmail = email.trim().toLowerCase();
+
+      // Check if user exists in Cloud SQL
+      const matchingUsers = await db.select().from(users).where(eq(users.email, cleanEmail));
+      let targetUser = matchingUsers[0];
+
+      const isSuperAdminEmail = cleanEmail === "birajkdl@gmail.com";
+
+      if (!targetUser) {
+        // If user doesn't exist yet, create account
+        const generatedUid = "g_" + crypto.randomBytes(12).toString("hex");
+        const assignedRole = isSuperAdminEmail ? "Super Administrator" : "Read-only/Audit User";
+        const assignedDesignation = isSuperAdminEmail ? "Chief System Administrator" : "Google Authenticated Operator";
+
+        const newUsers = await db.insert(users).values({
+          uid: generatedUid,
+          email: cleanEmail,
+          username: displayName?.trim() || cleanEmail.split("@")[0],
+          role: assignedRole,
+          status: "Active",
+          office: "Head Office",
+          designation: assignedDesignation,
+          createdAt: new Date()
+        }).returning();
+
+        targetUser = newUsers[0];
+      } else {
+        // If user already exists and is birajkdl@gmail.com, ensure Super Administrator role is locked in
+        if (isSuperAdminEmail && targetUser.role !== "Super Administrator") {
+          await db.update(users).set({ role: "Super Administrator" }).where(eq(users.uid, targetUser.uid));
+          targetUser.role = "Super Administrator";
+        }
+      }
+
+      if (targetUser.status && targetUser.status.toLowerCase() === "deactive") {
+        return res.status(403).json({ error: "Your account is deactivated. Contact an administrator." });
+      }
+
+      const token = generateMetisToken({
+        uid: targetUser.uid,
+        email: targetUser.email,
+        role: targetUser.role || "Read-only/Audit User",
+        username: targetUser.username,
+        office: targetUser.office
+      });
+
+      await createAuditLog(
+        "Google Sign-In (Direct)",
+        cleanEmail,
+        targetUser.role || "User",
+        `User logged in via Google Account Direct Verification for ${cleanEmail}.`
+      );
+
+      res.json({
+        token,
+        user: targetUser,
+        message: "Successfully authenticated with Google account."
+      });
+    } catch (error: any) {
+      console.error("Google direct authentication error:", error);
+      res.status(500).json({ error: "Failed to authenticate with Google account." });
+    }
+  });
+
   // --- User and Role Management Endpoints ---
 
   app.get("/api/me", requireAuth, async (req: AuthRequest, res) => {

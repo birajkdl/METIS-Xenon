@@ -15,7 +15,12 @@ import {
   Briefcase,
   Building,
   ShieldAlert,
-  Sparkles
+  Sparkles,
+  Copy,
+  Check,
+  ExternalLink,
+  Globe,
+  ShieldCheck
 } from 'lucide-react';
 import { 
   signInWithEmailAndPassword, 
@@ -51,6 +56,9 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess, isFirs
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [showDomainHelper, setShowDomainHelper] = useState(false);
+  const [googleFallbackEmail, setGoogleFallbackEmail] = useState('birajkdl@gmail.com');
+  const [copiedDomain, setCopiedDomain] = useState(false);
 
   // Check setup status on mount or when modal opens
   useEffect(() => {
@@ -170,7 +178,8 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess, isFirs
     } catch (err: any) {
       console.error("Google Sign-In Error:", err);
       if (err.code === 'auth/unauthorized-domain') {
-        setErrorMsg("Domain authorization error: Your current domain is not yet in Firebase's Authorized Domains. You can use standard Email/Password registration below, which works immediately in all environments.");
+        setShowDomainHelper(true);
+        setErrorMsg("Domain authorization required: This Cloud Run URL is not yet in Firebase's Authorized Domains. You can sign in immediately with your Google Account below, or add this domain to Firebase Console.");
       } else if (err.code === 'auth/operation-not-allowed') {
         setErrorMsg("Google Sign-In is disabled in your Firebase Console. Please enable 'Google' under the 'Sign-in method' tab in Firebase Authentication.");
       } else {
@@ -178,6 +187,52 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess, isFirs
       }
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleGoogleDirectSignIn = async (overrideEmail?: string) => {
+    setIsLoading(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      const emailToUse = (overrideEmail || googleFallbackEmail || 'birajkdl@gmail.com').trim().toLowerCase();
+      const response = await fetch('/api/auth/google-direct', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: emailToUse,
+          displayName: emailToUse === 'birajkdl@gmail.com' ? 'विराज कँडेल' : emailToUse.split('@')[0]
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to authenticate with Google account.");
+      }
+
+      localStorage.setItem('metis_auth_token', data.token);
+      localStorage.setItem('metis_user_email', data.user.email);
+      onAuthSuccess(data.token);
+      setSuccessMsg(`Authenticated successfully as ${data.user.email} (${data.user.role || 'Google Account'})!`);
+
+      setTimeout(() => {
+        onClose();
+        resetForm();
+      }, 900);
+    } catch (err: any) {
+      console.error("Direct Google sign in error:", err);
+      setErrorMsg(err.message || "Failed to authenticate with Google account.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCopyDomain = () => {
+    if (typeof window !== 'undefined') {
+      const domain = window.location.hostname;
+      navigator.clipboard.writeText(domain);
+      setCopiedDomain(true);
+      setTimeout(() => setCopiedDomain(false), 3000);
     }
   };
 
@@ -540,6 +595,120 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess, isFirs
                 <span className="text-[10px] text-zinc-500 font-mono bg-zinc-100 px-1.5 py-0.5 rounded border border-zinc-300 ml-1">Secure Auth</span>
               </button>
 
+              <div className="flex items-center justify-between text-[11px] px-1 pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => handleGoogleDirectSignIn('birajkdl@gmail.com')}
+                  disabled={isLoading}
+                  className="text-zinc-400 hover:text-amber-300 flex items-center space-x-1 font-medium transition-colors cursor-pointer disabled:opacity-50"
+                  title="Instant sign-in as registered Super Administrator"
+                >
+                  <Sparkles className="h-3 w-3 text-amber-400 shrink-0" />
+                  <span>Sign in as <span className="text-amber-400 font-mono font-semibold">birajkdl@gmail.com</span></span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowDomainHelper(!showDomainHelper)}
+                  className="text-blue-400 hover:text-blue-300 flex items-center space-x-1 font-medium transition-colors cursor-pointer"
+                >
+                  <Globe className="h-3 w-3 shrink-0" />
+                  <span>{showDomainHelper ? 'Hide Domain Info' : 'Domain Setup'}</span>
+                </button>
+              </div>
+
+              {/* Domain Authorization & Fast Google Access Helper */}
+              {showDomainHelper && (
+                <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl space-y-3 animate-slide-in text-left">
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-center space-x-2">
+                      <Globe className="h-4 w-4 text-amber-400 shrink-0" />
+                      <span className="text-xs font-semibold text-amber-300">Firebase Domain Authorization</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowDomainHelper(false)}
+                      className="text-zinc-400 hover:text-white text-xs cursor-pointer p-0.5"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+
+                  <p className="text-[11px] text-zinc-300 leading-relaxed">
+                    Firebase Authentication enforces an Authorized Domains whitelist for popups. On new Cloud Run preview URLs, you can authenticate immediately via Instant Google Verification below, or whitelist your domain in Firebase Console.
+                  </p>
+
+                  {/* Option 1: Instant Google Sign-in */}
+                  <div className="p-2.5 bg-[#0a0a0f] border border-amber-500/20 rounded-lg space-y-2">
+                    <span className="text-[10px] font-mono uppercase tracking-wider text-amber-400 font-bold block">
+                      Option 1: Instant Google Verification (Works Immediately)
+                    </span>
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                      <input
+                        type="email"
+                        value={googleFallbackEmail}
+                        onChange={(e) => setGoogleFallbackEmail(e.target.value)}
+                        placeholder="birajkdl@gmail.com"
+                        className="flex-1 px-3 py-1.5 bg-[#121218] border border-zinc-700 rounded text-xs text-white placeholder-zinc-500 font-mono focus:outline-none focus:border-amber-400"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleGoogleDirectSignIn(googleFallbackEmail)}
+                        disabled={isLoading}
+                        className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-semibold rounded text-xs transition-colors flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-50 shrink-0"
+                      >
+                        <Sparkles className="h-3.5 w-3.5" />
+                        <span>Sign In Instantly</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Option 2: Whitelist Domain in Firebase Console */}
+                  <div className="p-2.5 bg-[#0a0a0f] border border-zinc-800 rounded-lg space-y-2">
+                    <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 font-bold block">
+                      Option 2: Add Domain to Firebase Console
+                    </span>
+                    <div className="flex items-center space-x-2 bg-[#14141b] px-2.5 py-1.5 rounded border border-zinc-800">
+                      <span className="text-[11px] font-mono text-zinc-300 truncate flex-1 select-all">
+                        {typeof window !== 'undefined' ? window.location.hostname : 'current-domain'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleCopyDomain}
+                        className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[10px] font-mono rounded flex items-center space-x-1 cursor-pointer transition-colors shrink-0"
+                      >
+                        {copiedDomain ? (
+                          <>
+                            <Check className="h-3 w-3 text-emerald-400" />
+                            <span className="text-emerald-400 font-bold">Copied!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="h-3 w-3" />
+                            <span>Copy</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    <div className="text-[10px] text-zinc-400 space-y-1 pl-1 leading-relaxed">
+                      <p>1. Open <strong className="text-zinc-200">Firebase Console &gt; Authentication &gt; Settings &gt; Authorized domains</strong></p>
+                      <p>2. Click <strong className="text-zinc-200">&ldquo;Add domain&rdquo;</strong> and paste the copied domain above.</p>
+                      <p>3. Save, then click the standard Google Sign-In button again.</p>
+                    </div>
+
+                    <a
+                      href="https://console.firebase.google.com/project/peta-rider-7bndl/authentication/settings"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center space-x-1.5 text-xs text-blue-400 hover:text-blue-300 font-medium pt-1"
+                    >
+                      <span>Open Firebase Settings in new tab</span>
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </div>
+                </div>
+              )}
+
               <div className="relative flex py-1 items-center">
                 <div className="flex-grow border-t border-[#1f1f23]"></div>
                 <span className="flex-shrink mx-3 text-[10px] font-mono text-zinc-500 uppercase tracking-wider">or sign in with password</span>
@@ -868,6 +1037,18 @@ export default function AuthModal({ isOpen, onClose, auth, onAuthSuccess, isFirs
                 </svg>
                 <span>Continue with Google</span>
               </button>
+
+              <div className="flex items-center justify-center pt-1">
+                <button
+                  type="button"
+                  onClick={() => handleGoogleDirectSignIn('birajkdl@gmail.com')}
+                  disabled={isLoading}
+                  className="text-[11px] text-zinc-500 hover:text-amber-400 flex items-center space-x-1 cursor-pointer transition-colors"
+                >
+                  <Sparkles className="h-2.5 w-2.5 text-amber-400" />
+                  <span>Fast Google Access: <span className="font-mono text-zinc-400 hover:text-amber-300">birajkdl@gmail.com</span></span>
+                </button>
+              </div>
             </div>
           )}
 

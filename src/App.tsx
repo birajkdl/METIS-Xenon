@@ -620,6 +620,12 @@ export default function App() {
           const data = await res.json();
           if (!isCancelled && data) {
             setDbUser(data);
+            setUser(prev => prev || ({
+              uid: data.uid,
+              email: data.email,
+              displayName: data.username || data.email?.split('@')[0] || 'User',
+              photoURL: null
+            } as any));
           }
           return;
         }
